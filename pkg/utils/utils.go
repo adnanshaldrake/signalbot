@@ -125,7 +125,6 @@ func GetRedisClient() (*redis.Client, error) {
 		r_creds = ":"
 	}
 	creds := strings.Split(r_creds, ":")
-	fmt.Println(creds[0], creds[1])
 	// Create a new Redis client with preferred settings
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     r_url,

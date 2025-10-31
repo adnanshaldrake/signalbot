@@ -49,7 +49,7 @@ func (u Url) String() string {
 	*/
 	switch u {
 	case DataUrl:
-		return "https://data.binance.com"
+		return "https://data-api.binance.vision"
 	case MarketUrl1:
 		return "https://api.binance.com"
 	case MarketUrl2:

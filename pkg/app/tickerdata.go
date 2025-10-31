@@ -30,7 +30,6 @@ func GetSymbolList() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get exchange info: %s\n", err)
 	}
-
 	var parsed models.ExchangeInfoResponse
 	if err := json.Unmarshal(resBody, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %s", err)
@@ -140,7 +139,7 @@ func GetTimeSeries(symbol string) (*techan.TimeSeries, error) {
 
 	for idx := range ticker {
 		start := ticker[idx][0].(float64)
-		period := techan.NewTimePeriod(time.Unix(int64(start)/1000, 0), time.Second*3599)
+		period := techan.NewTimePeriod(time.Unix(int64(start)/1000, 0), time.Hour)
 
 		candle := techan.NewCandle(period)
 		candle.OpenPrice = big.NewFromString(ticker[idx][1].(string))
@@ -153,4 +152,24 @@ func GetTimeSeries(symbol string) (*techan.TimeSeries, error) {
 	}
 
 	return series, nil
+}
+
+func ClearRedisDatabase() error {
+	rdb, err := utils.GetRedisClient()
+	if err != nil {
+		return fmt.Errorf("failed to get Redis client: %w", err)
+	}
+	// Note: Do not defer rdb.Close() here if it's a shared connection pool.
+
+	ctx, cancel := utils.GetContextWithTimeout(5) // Use a short timeout
+	defer cancel()
+
+	// Execute FLUSHDB: removes all keys from the current database.
+	// Use FLUSHALL if you want to clear *all* databases, but FLUSHDB is safer.
+	status := rdb.FlushDB(ctx)
+	if status.Err() != nil {
+		return fmt.Errorf("failed to execute FLUSHDB: %w", status.Err())
+	}
+
+	return nil
 }
