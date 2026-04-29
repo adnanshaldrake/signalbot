@@ -62,47 +62,62 @@ func LoadTickerData(symbolList []string, limit int) error {
 
 	rdb, err := utils.GetRedisClient()
 	if err != nil {
-		return fmt.Errorf("failed to get Redis client %v\n", err)
+		return fmt.Errorf("failed to get Redis client: %v\n", err)
 	}
 
-	ctx, cancel := utils.GetContextWithTimeout(10)
+	ctx, cancel := utils.GetContextWithTimeout(30) // Increased timeout for bulk ops
 	defer cancel()
-	// pipeline := rdb.Pipeline()
+
+	// Initialize the pipeline
+	pipe := rdb.Pipeline()
 
 	var wg sync.WaitGroup
+	// We use a Mutex only to protect the pipeline object itself,
+	// as Redis pipelines are not thread-safe for concurrent commands.
+	var pipeMu sync.Mutex
 	errChan := make(chan error, len(symbolList))
 
 	for _, symbol := range symbolList {
-		wg.Add((1))
-		go func(symbol string) {
+		wg.Add(1)
+		go func(s string) {
 			defer wg.Done()
 
 			interval := "1h"
 			endpointUrl := fmt.Sprintf(
 				"%s?interval=%s&limit=%s&symbol=%s",
-				config.CandleStick.String(), interval, strconv.Itoa(limit), symbol,
+				config.CandleStick.String(), interval, strconv.Itoa(limit), s,
 			)
+
 			body, err := utils.GetData(client, endpointUrl)
 			if err != nil {
-				errChan <- fmt.Errorf("failed to get data for symbol %s: %v", symbol, err)
+				errChan <- fmt.Errorf("failed to fetch %s: %v", s, err)
 				return
 			}
-			if err := rdb.HSet(ctx, symbol, "ticker", string(body)).Err(); err != nil {
-				errChan <- fmt.Errorf("failed to store data for symbol %s in Redis: %v", symbol, err)
-			}
+
+			// Queue the command in the pipeline
+			pipeMu.Lock()
+			pipe.HSet(ctx, s, "ticker", string(body))
+			pipeMu.Unlock()
 		}(symbol)
 	}
 
-	go func() {
-		wg.Wait()
-		close(errChan)
-	}()
+	// Wait for all HTTP requests to finish
+	wg.Wait()
+	close(errChan)
 
+	// Check if we had fetch errors before committing to Redis
 	for err := range errChan {
 		if err != nil {
 			return err
 		}
 	}
+
+	// Execute all queued commands in one round-trip
+	_, err = pipe.Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to execute redis pipeline: %v", err)
+	}
+
 	return nil
 }
 
