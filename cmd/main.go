@@ -70,7 +70,7 @@ func main() {
 			continue
 		}
 
-		strategy, err := app.HierarchicalStrategyExample(series)
+		strategyName, strategy, err := app.LongTermTrendFollowing(series)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("Failed to init strategy for %s: %v.", symbol, err))
 			continue
@@ -111,7 +111,7 @@ func main() {
 				Symbol:   symbol,
 				Price:    price.FormattedString(priceDecimals),
 				Time:     candleTime,
-				Strategy: "Hierarchical",
+				Strategy: strategyName,
 			})
 		}
 	}

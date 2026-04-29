@@ -7,28 +7,6 @@ import (
 )
 
 // =========================================================================
-// INDICATOR HELPERS
-// =========================================================================
-
-// getBolBands calculates the Bollinger Bands indicator.
-func getBolBands(series *techan.TimeSeries) (techan.Indicator, techan.Indicator, error) {
-	if series == nil || len(series.Candles) == 0 {
-		return nil, nil, fmt.Errorf("input series is nil or empty")
-	}
-
-	// Get the Closing price for the series
-	closePrices := techan.NewClosePriceIndicator(series)
-
-	// Generate the Upper Bollinger Band (21 period, 2.0 std dev)
-	bolHigh := techan.NewBollingerUpperBandIndicator(closePrices, 21, 2.0)
-
-	// Generate the Lower Bollinger Band (21 period, 2.0 std dev)
-	bolLow := techan.NewBollingerLowerBandIndicator(closePrices, 21, 2.0)
-
-	return bolHigh, bolLow, nil
-}
-
-// =========================================================================
 // STRATEGY 1: BBANDS + RSI (Mean Reversion)
 // =========================================================================
 
@@ -144,75 +122,6 @@ func Strategy3(series *techan.TimeSeries) (techan.RuleStrategy, error) {
 
 	strategy := techan.RuleStrategy{
 		UnstablePeriod: 26, // Longest period is 26
-		EntryRule:      entryRule,
-		ExitRule:       exitRule,
-	}
-	return strategy, nil
-}
-
-// =========================================================================
-// HIERARCHICAL STRATEGY (MAC Trend Filter + BBANDS/RSI Reversion)
-// =========================================================================
-
-func HierarchicalStrategyExample(series *techan.TimeSeries) (techan.RuleStrategy, error) {
-	if series == nil || len(series.Candles) == 0 {
-		return techan.RuleStrategy{}, fmt.Errorf("empty or nil time series")
-	}
-
-	// --- Parent Strategy: Trend Filter (using MA Crossover logic from Strategy2) ---
-	shortMATrendPeriod := 10
-	longMATrendPeriod := 30
-	closePrices := techan.NewClosePriceIndicator(series)
-	shortMA := techan.NewSimpleMovingAverage(closePrices, shortMATrendPeriod)
-	longMA := techan.NewSimpleMovingAverage(closePrices, longMATrendPeriod)
-
-	// Use techan struct rules for comparison:
-	isUptrendRule := techan.OverIndicatorRule{First: shortMA, Second: longMA}
-	isDowntrendRule := techan.UnderIndicatorRule{First: shortMA, Second: longMA}
-
-	// --- Child Strategy: BBANDS + RSI (Mean Reversion logic from Strategy1) ---
-	highPrices := techan.NewHighPriceIndicator(series)
-	lowPrices := techan.NewLowPriceIndicator(series)
-
-	bolHigh, bolLow, err := getBolBands(series) // Uses a 21-period SMA for BB
-	if err != nil {
-		return techan.RuleStrategy{}, fmt.Errorf("failed to get Bollinger Bands %v", err)
-	}
-
-	rsi := techan.NewRelativeStrengthIndexIndicator(closePrices, 14)
-	rsiOversold := techan.NewConstantIndicator(30)
-	rsiUndersold := techan.NewConstantIndicator(70)
-
-	// --- Combining Parent and Child Rules ---
-	// Entry Rule: (Uptrend AND Child Strategy's Buy Signal AND No existing position)
-	entryRule := techan.And(
-		techan.And(
-			isDowntrendRule,
-			techan.And( // 1st level combines the crossover rules
-				techan.NewCrossDownIndicatorRule(lowPrices, bolLow), // Price below lower Bollinger Band
-				techan.NewCrossUpIndicatorRule(rsi, rsiOversold),    // RSI crosses below 70
-			),
-		),
-		techan.PositionNewRule{}, // 2nd level combines the result with the position filter
-	)
-
-	// Exit Rule: (Downtrend AND Child Strategy's Sell Signal AND Existing position)
-	exitRule := techan.And(
-		techan.And(
-			isUptrendRule,
-			techan.And(
-				techan.NewCrossUpIndicatorRule(highPrices, bolHigh), // Price above upper Bollinger Band
-				techan.NewCrossDownIndicatorRule(rsi, rsiUndersold), // RSI crosses above 30
-			),
-		),
-		techan.PositionOpenRule{},
-	)
-
-	// Max unstable period is 30 (from longMATrendPeriod)
-	maxUnstablePeriod := 30
-
-	strategy := techan.RuleStrategy{
-		UnstablePeriod: maxUnstablePeriod,
 		EntryRule:      entryRule,
 		ExitRule:       exitRule,
 	}
