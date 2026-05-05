@@ -37,3 +37,18 @@ type ExchangeInfoResponse struct {
 	ExchangeFilters []any       `json:"exchangeFilters"`
 	Symbols         []Symbol    `json:"symbols"`
 }
+
+// SignalResult defines the structure for our JSON output
+type SignalResult struct {
+	Symbol   string `json:"symbol"`
+	Price    string `json:"price"`
+	Time     string `json:"time"`
+	Strategy string `json:"strategy"`
+}
+
+type Strategy int
+
+const (
+	LongTermTrendFollowing Strategy = iota
+	ShortTermMeanReversion
+)

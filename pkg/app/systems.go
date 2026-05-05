@@ -10,9 +10,12 @@ import (
 // HIERARCHICAL STRATEGY (MAC Trend Filter + BBANDS/RSI Reversion)
 // =========================================================================
 
-func ShortTermMeanReversion(series *techan.TimeSeries) (techan.RuleStrategy, error) {
+type StrategyFunc func(series *techan.TimeSeries) (string, techan.RuleStrategy, error)
+
+func ShortTermMeanReversion(series *techan.TimeSeries) (string, techan.RuleStrategy, error) {
+	strategyName := "Short Term Mean Reversion"
 	if series == nil || len(series.Candles) == 0 {
-		return techan.RuleStrategy{}, fmt.Errorf("empty or nil time series")
+		return strategyName, techan.RuleStrategy{}, fmt.Errorf("empty or nil time series")
 	}
 
 	// --- Parent Strategy: Trend Filter (using MA Crossover logic from Strategy2) ---
@@ -31,7 +34,7 @@ func ShortTermMeanReversion(series *techan.TimeSeries) (techan.RuleStrategy, err
 
 	bolHigh, bolLow, err := getBolBands(series)
 	if err != nil {
-		return techan.RuleStrategy{}, fmt.Errorf("failed to get Bollinger Bands %v", err)
+		return strategyName, techan.RuleStrategy{}, fmt.Errorf("failed to get Bollinger Bands %v", err)
 	}
 
 	rsi := techan.NewRelativeStrengthIndexIndicator(closePrices, 14)
@@ -70,7 +73,7 @@ func ShortTermMeanReversion(series *techan.TimeSeries) (techan.RuleStrategy, err
 		EntryRule:      entryRule,
 		ExitRule:       exitRule,
 	}
-	return strategy, nil
+	return strategyName, strategy, nil
 }
 
 func LongTermTrendFollowing(series *techan.TimeSeries) (string, techan.RuleStrategy, error) {

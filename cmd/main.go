@@ -2,22 +2,18 @@ package main
 
 import (
 	"adnan/binance-bot/pkg/app"
+	"adnan/binance-bot/pkg/models"
 	"encoding/json" // New import for JSON marshaling
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/sdcoffey/techan"
 )
-
-// SignalResult defines the structure for our JSON output
-type SignalResult struct {
-	Symbol   string `json:"symbol"`
-	Price    string `json:"price"`
-	Time     string `json:"time"`
-	Strategy string `json:"strategy"`
-}
 
 func init() {
 	// Keep log flags set to zero for clean header/footer message
@@ -26,14 +22,7 @@ func init() {
 
 const dataLimit = 50
 
-func main() {
-	now := time.Now().UTC()
-	currentHourlyStart := now.Truncate(time.Hour)
-
-	log.Printf("Current candle start time (UTC) being checked: %s", currentHourlyStart.Format(time.RFC3339))
-
-	log.Println("--- Starting BUY Signal Scanner ---")
-
+func loadData() []string {
 	// --- NEW STEP: Clean DB ---
 	log.Println("Clearing previous ticker data from Redis...")
 	if err := app.ClearRedisDatabase(); err != nil {
@@ -56,12 +45,31 @@ func main() {
 	if err := app.LoadTickerData(symbolsToTest, dataLimit); err != nil {
 		log.Fatalf("Failed to load ticker data: %v", err)
 	}
+	return symbolsToTest
+}
 
-	// log.Println("Scanning the latest candle for", len(symbolsToTest), "symbols")
+func computeBuySignals(symbolsToTest []string, strategyType models.Strategy) ([]string, []models.SignalResult) {
+	now := time.Now().UTC()
+	currentHourlyStart := now.Truncate(time.Hour)
+
+	log.Printf("Current candle start time (UTC) being checked: %s", currentHourlyStart.Format(time.RFC3339))
+
+	log.Println("--- Starting BUY Signal Scanner ---")
+
+	var s app.StrategyFunc
 
 	// --- 2. Strategy Execution & Result Collection ---
-	var buySignals []SignalResult // Store results as a slice of structs
-	var warnings []string         // Collect warnings for printing to Stderr
+	var buySignals []models.SignalResult // Store results as a slice of structs
+	var warnings []string                // Collect warnings for printing to Stderr
+
+	switch strategyType {
+	case models.LongTermTrendFollowing:
+		s = app.LongTermTrendFollowing
+	case models.ShortTermMeanReversion:
+		s = app.ShortTermMeanReversion
+	default:
+		return []string{"Unknown"}, nil
+	}
 
 	for _, symbol := range symbolsToTest {
 		series, err := app.GetTimeSeries(symbol)
@@ -70,7 +78,7 @@ func main() {
 			continue
 		}
 
-		strategyName, strategy, err := app.LongTermTrendFollowing(series)
+		strategyName, strategy, err := s(series)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("Failed to init strategy for %s: %v.", symbol, err))
 			continue
@@ -107,7 +115,7 @@ func main() {
 			const priceDecimals = 8 // Increased precision for crypto prices
 
 			// Append the structured result
-			buySignals = append(buySignals, SignalResult{
+			buySignals = append(buySignals, models.SignalResult{
 				Symbol:   symbol,
 				Price:    price.FormattedString(priceDecimals),
 				Time:     candleTime,
@@ -115,9 +123,11 @@ func main() {
 			})
 		}
 	}
+	return warnings, buySignals
+}
 
+func printOutputs(warnings []string, buySignals []models.SignalResult) {
 	// --- 3. Final Output ---
-
 	// Print Warnings to Standard Error (os.Stderr)
 	if len(warnings) > 0 {
 		fmt.Fprintln(os.Stderr, "\n--- Strategy Warnings ---")
@@ -141,4 +151,43 @@ func main() {
 	fmt.Println(string(jsonData))
 
 	log.Println("--- Scanner Finished ---")
+}
+
+func getSymbols(c *gin.Context) {
+	symbolsToTest := loadData()
+	c.JSON(200, symbolsToTest)
+}
+
+func getBuySignals(c *gin.Context) {
+	symbolsToTest := loadData()
+	var strategyType models.Strategy
+
+	strategyParam := c.Param("strategy")
+
+	switch strategyParam {
+	case "long":
+		strategyType = models.LongTermTrendFollowing
+	case "short":
+		strategyType = models.ShortTermMeanReversion
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid strategy type"})
+		return
+	}
+
+	warnings, buySignals := computeBuySignals(symbolsToTest, strategyType)
+	if warnings != nil {
+
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"signals":  buySignals,
+		"warnings": warnings,
+	})
+}
+
+func main() {
+	router := gin.Default()
+	router.GET("/symbols", getSymbols)
+	router.GET("/signals/:strategy", getBuySignals)
+
+	router.Run("localhost:8080")
 }
