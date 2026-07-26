@@ -1,0 +1,53 @@
+# =============================================================================
+# signalbot systemd service unit
+# =============================================================================
+# Install on a VPS (e.g. Hetzner, Oracle Cloud):
+#
+#   1. Build the binary:
+#      GOOS=linux GOARCH=amd64 go build -o signalbot ./cmd/main.go
+#
+#   2. Copy binary and env file to server:
+#      scp signalbot user@yourserver:/opt/signalbot/
+#      scp .env user@yourserver:/opt/signalbot/
+#
+#   3. Install this service file:
+#      sudo cp deploy/signalbot.service /etc/systemd/system/
+#      sudo systemctl daemon-reload
+#      sudo systemctl enable signalbot
+#      sudo systemctl start signalbot
+#
+#   4. Check logs:
+#      sudo journalctl -u signalbot -f
+# =============================================================================
+
+[Unit]
+Description=Signalbot — Binance Altcoin Trading Bot
+After=network-online.target redis.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=signalbot
+Group=signalbot
+WorkingDirectory=/opt/signalbot
+
+# Load secrets from .env file
+EnvironmentFile=/opt/signalbot/.env
+
+ExecStart=/opt/signalbot/signalbot
+Restart=on-failure
+RestartSec=10s
+
+# Logging — captured by journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=signalbot
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/signalbot/data
+
+[Install]
+WantedBy=multi-user.target
