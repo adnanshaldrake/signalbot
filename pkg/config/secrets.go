@@ -67,7 +67,7 @@ func Load() (*BotConfig, error) {
 		TakeProfitPct:   getFloat64Env("TAKE_PROFIT_PCT", 4.0),
 		MaxDailyLossPct: getFloat64Env("MAX_DAILY_LOSS_PCT", 5.0),
 
-		RedisURL:      getStringEnv("REDIS_URL", "localhost:6379"),
+		RedisURL:      getStringEnv("REDIS_URL", ""),
 		RedisUsername: getStringEnv("REDIS_USERNAME", ""),
 		RedisPassword: getStringEnv("REDIS_PASSWORD", ""),
 

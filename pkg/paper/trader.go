@@ -19,11 +19,11 @@ const startingBalanceUSDT = 1000.0 // Virtual starting balance for paper trading
 // Trader simulates order execution without touching real funds.
 type Trader struct {
 	cfg      *config.BotConfig
-	stateMgr *state.Manager
+	stateMgr state.StateManager
 }
 
 // NewTrader creates a new paper Trader.
-func NewTrader(cfg *config.BotConfig, stateMgr *state.Manager) *Trader {
+func NewTrader(cfg *config.BotConfig, stateMgr state.StateManager) *Trader {
 	return &Trader{cfg: cfg, stateMgr: stateMgr}
 }
 

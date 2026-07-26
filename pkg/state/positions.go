@@ -38,10 +38,15 @@ type Manager struct {
 
 // NewManager creates a new state Manager using the provided BotConfig.
 func NewManager(cfg *config.BotConfig) (*Manager, error) {
+	return NewManager2(cfg.RedisURL, cfg.RedisUsername, cfg.RedisPassword)
+}
+
+// NewManager2 creates a Redis Manager directly from connection params (no config dependency).
+func NewManager2(addr, username, password string) (*Manager, error) {
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     cfg.RedisURL,
-		Username: cfg.RedisUsername,
-		Password: cfg.RedisPassword,
+		Addr:     addr,
+		Username: username,
+		Password: password,
 		DB:       0,
 	})
 
@@ -53,6 +58,7 @@ func NewManager(cfg *config.BotConfig) (*Manager, error) {
 	}
 	return &Manager{rdb: rdb}, nil
 }
+
 
 // Close releases the underlying Redis connection.
 func (m *Manager) Close() error {

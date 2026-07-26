@@ -78,10 +78,13 @@ func main() {
 
 // runBot is the main trading loop.
 func runBot(cfg *config.BotConfig, db *store.DB) {
-	// State manager (Redis)
-	stateMgr, err := state.NewManager(cfg)
+	// Initialise ticker cache (in-memory if no Redis, Redis otherwise)
+	app.InitCache(cfg)
+
+	// State manager — auto-selects Redis or in-memory based on REDIS_URL
+	stateMgr, err := state.NewStateManager(cfg.RedisURL, cfg.RedisUsername, cfg.RedisPassword)
 	if err != nil {
-		slog.Error("failed to connect to Redis", "error", err)
+		slog.Error("failed to init state manager", "error", err)
 		os.Exit(1)
 	}
 	defer stateMgr.Close()
@@ -137,7 +140,7 @@ func runCycle(
 	ctx context.Context,
 	cfg *config.BotConfig,
 	watchlist []string,
-	stateMgr *state.Manager,
+	stateMgr state.StateManager,
 	riskMgr *risk.Manager,
 	notifier *notify.Notifier,
 	paperTrader *paper.Trader,
@@ -145,8 +148,8 @@ func runCycle(
 ) {
 	slog.Info("cycle start", "symbols", len(watchlist), "time", time.Now().UTC().Format(time.RFC3339))
 
-	// Load fresh ticker data into Redis
-	if err := app.LoadTickerData(watchlist, cfg.CandleLimit); err != nil {
+	// Fetch fresh candlestick data into the cache (in-memory or Redis)
+	if err := app.LoadTickerDataWithInterval(watchlist, cfg.CandleLimit, cfg.CandleInterval); err != nil {
 		slog.Error("LoadTickerData failed", "error", err)
 		notifier.Error("LoadTickerData", err.Error())
 		return

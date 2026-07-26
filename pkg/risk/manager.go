@@ -20,14 +20,14 @@ type Decision struct {
 
 // Manager checks all risk rules before a trade is allowed.
 type Manager struct {
-	cfg          *config.BotConfig
-	stateMgr     *state.Manager
+	cfg           *config.BotConfig
+	stateMgr      state.StateManager
 	dailyStartPnL float64
 	startTime     time.Time
 }
 
 // NewManager creates a new risk Manager.
-func NewManager(cfg *config.BotConfig, stateMgr *state.Manager) *Manager {
+func NewManager(cfg *config.BotConfig, stateMgr state.StateManager) *Manager {
 	return &Manager{
 		cfg:       cfg,
 		stateMgr:  stateMgr,
