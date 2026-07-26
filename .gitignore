@@ -3,3 +3,12 @@ main
 **/go.sum
 **/*.json
 **/*.rdb
+
+# Secrets — never commit the real .env
+.env
+
+# SQLite historical data
+data/
+
+# Build output
+signalbot
