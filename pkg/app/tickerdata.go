@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -96,7 +97,9 @@ func GetSymbolList() ([]string, error) {
 	}
 
 	for _, symbol := range parsed.Symbols {
-		if symbol.QuoteAsset == "USDT" {
+		if symbol.QuoteAsset == "USDT" &&
+			symbol.Status == "TRADING" &&
+			symbol.IsSpotTradingAllowed {
 			symbolList = append(symbolList, symbol.Symbol)
 		}
 	}
@@ -178,4 +181,67 @@ func GetTimeSeries(symbol string) (*techan.TimeSeries, error) {
 		series.AddCandle(candle)
 	}
 	return series, nil
+}
+
+// ticker24h is the minimal subset of the Binance /api/v3/ticker/24hr response
+// that we need for auto-discovering active USDT pairs.
+type ticker24h struct {
+	Symbol             string `json:"symbol"`
+	QuoteVolume        string `json:"quoteVolume"`        // 24h volume in quote asset (USDT)
+	Count              int    `json:"count"`              // number of trades in 24h
+	PriceChangePercent string `json:"priceChangePercent"` // e.g. "3.25" or "-1.80"
+}
+
+// GetActiveSymbols calls the Binance 24hr ticker and returns up to maxSymbols
+// USDT spot pairs that meet the minimum volume and trade count thresholds,
+// sorted by 24h USDT volume descending (most liquid first).
+// Pass minTradeCount=0 to skip the trade-count filter.
+func GetActiveSymbols(minVolUSDT float64, minTradeCount, maxSymbols int) ([]string, error) {
+	var client utils.HTTPClient = &http.Client{Timeout: 10 * time.Second}
+
+	body, err := utils.GetData(client, config.DailyTicker.String())
+	if err != nil {
+		return nil, fmt.Errorf("GetActiveSymbols: fetch 24hr ticker: %w", err)
+	}
+
+	var tickers []ticker24h
+	if err := json.Unmarshal(body, &tickers); err != nil {
+		return nil, fmt.Errorf("GetActiveSymbols: unmarshal: %w", err)
+	}
+
+	type candidate struct {
+		symbol string
+		volUSDT float64
+	}
+	var candidates []candidate
+
+	for _, t := range tickers {
+		// Only USDT quote pairs
+		if len(t.Symbol) < 5 || t.Symbol[len(t.Symbol)-4:] != "USDT" {
+			continue
+		}
+		vol, err := strconv.ParseFloat(t.QuoteVolume, 64)
+		if err != nil || vol < minVolUSDT {
+			continue
+		}
+		if minTradeCount > 0 && t.Count < minTradeCount {
+			continue
+		}
+		candidates = append(candidates, candidate{symbol: t.Symbol, volUSDT: vol})
+	}
+
+	// Sort by volume descending (highest liquidity first)
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].volUSDT > candidates[j].volUSDT
+	})
+
+	if maxSymbols > 0 && len(candidates) > maxSymbols {
+		candidates = candidates[:maxSymbols]
+	}
+
+	symbols := make([]string, len(candidates))
+	for i, c := range candidates {
+		symbols[i] = c.symbol
+	}
+	return symbols, nil
 }

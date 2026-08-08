@@ -36,8 +36,9 @@ func NewManager(cfg *config.BotConfig, stateMgr state.StateManager) *Manager {
 }
 
 // CheckEntry evaluates whether it is safe to open a new position for the given symbol.
+// overrideQty, if > 0, replaces the configured MaxPositionUSDT as the trade size.
 // It returns a Decision indicating whether the trade is allowed and at what size.
-func (m *Manager) CheckEntry(ctx context.Context, symbol string, currentPrice float64) Decision {
+func (m *Manager) CheckEntry(ctx context.Context, symbol string, currentPrice float64, overrideQty float64) Decision {
 	// 1. Max simultaneous positions
 	count, err := m.stateMgr.CountOpenPositions(ctx)
 	if err != nil {
@@ -61,10 +62,15 @@ func (m *Manager) CheckEntry(ctx context.Context, symbol string, currentPrice fl
 		return deny(reason)
 	}
 
+	qty := m.cfg.MaxPositionUSDT
+	if overrideQty > 0 {
+		qty = overrideQty
+	}
+
 	return Decision{
 		Allowed:  true,
 		Reason:   "all risk checks passed",
-		Quantity: m.cfg.MaxPositionUSDT,
+		Quantity: qty,
 	}
 }
 

@@ -17,9 +17,11 @@ import (
 	"adnan/binance-bot/pkg/backtest"
 	"adnan/binance-bot/pkg/binance"
 	"adnan/binance-bot/pkg/config"
+	"adnan/binance-bot/pkg/filter"
 	"adnan/binance-bot/pkg/notify"
 	"adnan/binance-bot/pkg/paper"
 	"adnan/binance-bot/pkg/risk"
+	"adnan/binance-bot/pkg/signals"
 	"adnan/binance-bot/pkg/state"
 	"adnan/binance-bot/pkg/store"
 	"adnan/binance-bot/pkg/utils"
@@ -135,7 +137,9 @@ func runBot(cfg *config.BotConfig, db *store.DB) {
 	}
 }
 
-// runCycle executes one full iteration: fetch data → analyse → check exits → check entries → trade.
+// runCycle executes one full iteration: fetch data → analyse → check exits → collect entries → score → trade.
+// Entry signals are gathered in phase 1 (no orders placed), then scored and executed in phase 2
+// so that higher-conviction setups receive a larger capital allocation.
 func runCycle(
 	ctx context.Context,
 	cfg *config.BotConfig,
@@ -155,6 +159,18 @@ func runCycle(
 		return
 	}
 
+	// Build filter config from bot config
+	fCfg := filter.Config{
+		MinRollingVolUSDT: cfg.MinVolume24hUSDT,
+		MinTradeCount:     cfg.MinTradeCount24h,
+		MaxPriceChangePct: cfg.MaxPriceChange24h,
+		RugCandleBodyPct:  cfg.RugCandleBodyPct,
+		MinBBBandwidth:    0.01,
+	}
+
+	// --- Phase 1: exits + collect entry candidates ---
+	var candidates []signals.Candidate
+
 	for _, symbol := range watchlist {
 		select {
 		case <-ctx.Done():
@@ -167,13 +183,14 @@ func runCycle(
 			slog.Warn("GetTimeSeries failed", "symbol", symbol, "error", err)
 			continue
 		}
-		if len(series.Candles) < 25 {
-			continue // not enough data
+		// Require minimum candles for Strategy2 warm-up (EMA200 needs 200 bars)
+		if len(series.Candles) < cfg.MinCandlesRequired {
+			continue
 		}
 
-		strategy, err := app.Strategy1(series)
+		strategy, err := app.Strategy2(series)
 		if err != nil {
-			slog.Warn("Strategy1 failed", "symbol", symbol, "error", err)
+			slog.Warn("Strategy2 failed", "symbol", symbol, "error", err)
 			continue
 		}
 
@@ -188,8 +205,39 @@ func runCycle(
 		}
 
 		if pos != nil {
-			shouldExit := strategy.ShouldExit(lastIdx, techan.NewTradingRecord()) ||
-				riskMgr.CheckStopLoss(pos, currentPrice) ||
+			// Build a rolling window from the last 3 candles for rug-pull detection
+			nCandles := len(series.Candles)
+			windowStart := nCandles - 3
+			if windowStart < 0 {
+				windowStart = 0
+			}
+			var rugWindow filter.RollingWindow
+			for _, sc := range series.Candles[windowStart:] {
+				o, _ := strconv.ParseFloat(sc.OpenPrice.String(), 64)
+				c, _ := strconv.ParseFloat(sc.ClosePrice.String(), 64)
+				v, _ := strconv.ParseFloat(sc.Volume.String(), 64)
+				rugWindow = append(rugWindow, filter.Candle{Open: o, Close: c, Volume: v})
+			}
+
+			// Emergency exit on rug-pull candle
+			if filter.ShouldEmergencyExit(rugWindow, fCfg) {
+				slog.Warn("rug_pull_detected — emergency exit", "symbol", symbol)
+				pnl := risk.CalcPnL(pos, currentPrice)
+				pnlPct := pnl / pos.QuoteSpent * 100
+				if cfg.PaperTrading {
+					paperTrader.PlaceMarketOrder(ctx, symbol, binance.Sell, currentPrice, pos.QuoteSpent) //nolint:errcheck
+				} else {
+					binanceClient.PlaceMarketOrder(symbol, binance.Sell, pos.Quantity) //nolint:errcheck
+					stateMgr.ClosePosition(ctx, symbol, pnl)                           //nolint:errcheck
+				}
+				notifier.TradeClosed(symbol, tradingMode(cfg), pos.EntryPrice, currentPrice, pnl, pnlPct)
+				continue
+			}
+
+			// Normal exit: SL/TP check only (strategy.ShouldExit is not used in the live
+			// loop — it requires a populated TradingRecord that we don't maintain per-symbol,
+			// and PositionOpenRule{} would never fire with a fresh record).
+			shouldExit := riskMgr.CheckStopLoss(pos, currentPrice) ||
 				riskMgr.CheckTakeProfit(pos, currentPrice)
 
 			if shouldExit {
@@ -216,46 +264,127 @@ func runCycle(
 			continue // don't check entry if we already have a position
 		}
 
-		// --- Check entries for new positions ---
+		// --- Collect entry candidates (no order placed yet) ---
 		record := techan.NewTradingRecord()
 		if !strategy.ShouldEnter(lastIdx, record) {
 			continue
 		}
 
-		decision := riskMgr.CheckEntry(ctx, symbol, currentPrice)
+		// Gather indicator values for scoring and filter checks
+		rsiVal, err := app.GetRSI(series, lastIdx)
+		if err != nil {
+			slog.Warn("GetRSI failed", "symbol", symbol, "error", err)
+			continue
+		}
+		upperBB, err := app.GetUpperBB(series, lastIdx)
+		if err != nil {
+			slog.Warn("GetUpperBB failed", "symbol", symbol, "error", err)
+			continue
+		}
+		lowerBB, _ := app.GetLowerBB(series, lastIdx)
+		middleBB, _ := app.GetMiddleBB(series, lastIdx)
+
+		// Build rolling 24h window for filter checks (96 candles on 15m)
+		nCandles := len(series.Candles)
+		winStart := nCandles - 97 // 96 candles + current
+		if winStart < 0 {
+			winStart = 0
+		}
+		var rollingWindow filter.RollingWindow
+		for _, sc := range series.Candles[winStart:lastIdx] {
+			o, _ := strconv.ParseFloat(sc.OpenPrice.String(), 64)
+			c, _ := strconv.ParseFloat(sc.ClosePrice.String(), 64)
+			v, _ := strconv.ParseFloat(sc.Volume.String(), 64)
+			rollingWindow = append(rollingWindow, filter.Candle{Open: o, Close: c, Volume: v})
+		}
+
+		// Estimate 24h USDT volume and run eligibility checks
+		volumeBase, _ := strconv.ParseFloat(series.Candles[lastIdx].Volume.String(), 64)
+		volume24hUSDT := rollingWindow.VolumeUSDT() + volumeBase*currentPrice
+
+		eligibility := filter.IsEligibleForEntry(
+			rollingWindow, currentPrice,
+			upperBB, lowerBB, middleBB,
+			0, // tradeCount: TODO wire from 24hr ticker
+			fCfg,
+		)
+		if !eligibility.Eligible {
+			slog.Debug("entry_filter_blocked", "symbol", symbol, "reason", eligibility.Reason)
+			continue
+		}
+
+		candidates = append(candidates, signals.Candidate{
+			Symbol:        symbol,
+			CurrentPrice:  currentPrice,
+			UpperBB:       upperBB,
+			RSI:           rsiVal,
+			Volume24hUSDT: volume24hUSDT,
+		})
+	}
+
+	if len(candidates) == 0 {
+		slog.Info("cycle complete — no entry signals", "time", time.Now().UTC().Format(time.RFC3339))
+		return
+	}
+
+	// --- Phase 2: score → sort → execute ---
+	weights := signals.ScoreWeights{
+		Upside:   cfg.SignalUpsideWeight,
+		RSIDepth: cfg.SignalRSIWeight,
+		Volume:   cfg.SignalVolumeWeight,
+	}
+	ranked := signals.Score(candidates, weights, cfg.MaxPositionUSDT, cfg.SignalExtraBudgetUSDT)
+
+	slog.Info("entry signals scored", "count", len(ranked))
+
+	for _, candidate := range ranked {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		decision := riskMgr.CheckEntry(ctx, candidate.Symbol, candidate.CurrentPrice, candidate.AllocationUSDT)
 		if !decision.Allowed {
-			slog.Debug("entry blocked by risk", "symbol", symbol, "reason", decision.Reason)
+			slog.Debug("entry blocked by risk", "symbol", candidate.Symbol, "reason", decision.Reason)
 			continue
 		}
 
 		if cfg.PaperTrading {
-			if _, err := paperTrader.PlaceMarketOrder(ctx, symbol, binance.Buy, currentPrice, decision.Quantity); err != nil {
-				slog.Error("paper buy failed", "symbol", symbol, "error", err)
+			if _, err := paperTrader.PlaceMarketOrder(ctx, candidate.Symbol, binance.Buy, candidate.CurrentPrice, decision.Quantity); err != nil {
+				slog.Error("paper buy failed", "symbol", candidate.Symbol, "error", err)
 				continue
 			}
 		} else {
-			resp, err := binanceClient.PlaceMarketOrder(symbol, binance.Buy, decision.Quantity)
+			resp, err := binanceClient.PlaceMarketOrder(candidate.Symbol, binance.Buy, decision.Quantity)
 			if err != nil {
-				slog.Error("live buy failed", "symbol", symbol, "error", err)
+				slog.Error("live buy failed", "symbol", candidate.Symbol, "error", err)
 				notifier.Error("PlaceMarketOrder BUY", err.Error())
 				continue
 			}
 			// Record position from real fill data
 			filledQty, _ := strconv.ParseFloat(resp.ExecutedQty, 64)
 			pos := state.Position{
-				Symbol:     symbol,
+				Symbol:     candidate.Symbol,
 				Side:       "BUY",
-				EntryPrice: currentPrice,
+				EntryPrice: candidate.CurrentPrice,
 				Quantity:   filledQty,
 				QuoteSpent: decision.Quantity,
 				OrderID:    resp.OrderID,
 				OpenedAt:   time.Now(),
 			}
 			if err := stateMgr.OpenPosition(ctx, pos); err != nil {
-				slog.Error("OpenPosition failed", "symbol", symbol, "error", err)
+				slog.Error("OpenPosition failed", "symbol", candidate.Symbol, "error", err)
 			}
 		}
-		notifier.TradeOpened(symbol, tradingMode(cfg), currentPrice, decision.Quantity/currentPrice, decision.Quantity)
+		slog.Info("signal ranked and executed",
+			"symbol", candidate.Symbol,
+			"score", fmt.Sprintf("%.3f", candidate.Score),
+			"allocation_usdt", fmt.Sprintf("%.2f", decision.Quantity),
+			"rsi", fmt.Sprintf("%.2f", candidate.RSI),
+			"upside_pct", fmt.Sprintf("%.2f%%", (candidate.UpperBB-candidate.CurrentPrice)/candidate.CurrentPrice*100),
+		)
+		notifier.TradeOpened(candidate.Symbol, tradingMode(cfg), candidate.CurrentPrice, decision.Quantity/candidate.CurrentPrice, decision.Quantity)
 	}
 
 	slog.Info("cycle complete", "time", time.Now().UTC().Format(time.RFC3339))
@@ -319,7 +448,7 @@ func runBackfill(cfg *config.BotConfig, db *store.DB) {
 	slog.Info("backfill complete")
 }
 
-// runBacktest replays stored candles through Strategy1 and prints results.
+// runBacktest replays stored candles through Strategy2 with filters and prints results.
 func runBacktest(cfg *config.BotConfig, db *store.DB) {
 	slog.Info("backtest starting")
 	symbols, err := db.ListSymbols()
@@ -328,7 +457,15 @@ func runBacktest(cfg *config.BotConfig, db *store.DB) {
 		os.Exit(1)
 	}
 
-	runner := backtest.NewRunner(db, cfg.MaxPositionUSDT)
+	runner := backtest.NewRunner(db, cfg.MaxPositionUSDT).
+		WithRisk(cfg.StopLossPct, cfg.TakeProfitPct, 192).
+		WithFilters(backtest.FilterConfig{
+			MinRollingVolUSDT: cfg.MinVolume24hUSDT,
+			RugCandleBodyPct:  cfg.RugCandleBodyPct,
+			MaxPriceChangePct: cfg.MaxPriceChange24h,
+			MinBBBandwidth:    0.01,
+			RequireEMATrend:   true,
+		})
 	totalPnL := 0.0
 
 	for _, symbol := range symbols {
@@ -344,8 +481,13 @@ func runBacktest(cfg *config.BotConfig, db *store.DB) {
 	slog.Info("backtest complete", "total_pnl_usdt", fmt.Sprintf("$%.4f", totalPnL))
 }
 
-// resolveWatchlist returns the configured watchlist, or fetches all USDT pairs if empty.
+// resolveWatchlist returns the configured watchlist, auto-discovers active USDT pairs
+// if AUTO_DISCOVER_SYMBOLS=true, or fetches all USDT pairs if WATCHLIST is empty.
 func resolveWatchlist(cfg *config.BotConfig) ([]string, error) {
+	if cfg.AutoDiscoverSymbols {
+		slog.Info("auto-discovering active USDT pairs", "min_vol_usdt", cfg.MinVolume24hUSDT, "max", cfg.MaxWatchlistSize)
+		return app.GetActiveSymbols(cfg.MinVolume24hUSDT, cfg.MinTradeCount24h, cfg.MaxWatchlistSize)
+	}
 	if len(cfg.Watchlist) > 0 {
 		return cfg.Watchlist, nil
 	}

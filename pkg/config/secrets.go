@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"strconv"
@@ -46,11 +47,55 @@ type BotConfig struct {
 	// Notifications
 	TelegramBotToken string // TELEGRAM_BOT_TOKEN — optional; alerts disabled if empty
 	TelegramChatID   string // TELEGRAM_CHAT_ID — your personal or group chat ID
+
+	// Signal scoring & dynamic position sizing
+	SignalUpsideWeight    float64 // SIGNAL_UPSIDE_WEIGHT — BB upside weight; default 0.50
+	SignalRSIWeight       float64 // SIGNAL_RSI_WEIGHT — RSI depth weight; default 0.30
+	SignalVolumeWeight    float64 // SIGNAL_VOLUME_WEIGHT — volume weight; default 0.20
+	SignalExtraBudgetUSDT float64 // SIGNAL_EXTRA_BUDGET_USDT — extra USDT distributed by score; default 40.0
+
+	// Pre-filter: symbol eligibility
+	MinVolume24hUSDT   float64 // MIN_VOLUME_24H_USDT — minimum 24h USDT volume; default 500000
+	MinTradeCount24h   int     // MIN_TRADE_COUNT_24H — minimum 24h trade count; default 5000
+	MaxPriceChange24h  float64 // MAX_PRICE_CHANGE_24H_PCT — block entries if |%change| exceeds this; default 40.0
+	RugCandleBodyPct   float64 // RUG_CANDLE_BODY_PCT — emergency exit if candle body % drop exceeds this; default 15.0
+	MinCandlesRequired int     // MIN_CANDLES_REQUIRED — warm-up minimum; default 50
+
+	// Dynamic watchlist auto-discovery
+	AutoDiscoverSymbols bool // AUTO_DISCOVER_SYMBOLS — if true, ignore WATCHLIST and scan all USDT pairs; default false
+	MaxWatchlistSize    int  // MAX_WATCHLIST_SIZE — cap on auto-discovered symbols; default 50
+}
+
+func loadDotEnv() {
+	file, err := os.Open(".env")
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			val := strings.TrimSpace(parts[1])
+			if os.Getenv(key) == "" { // only set if not already present in environment
+				os.Setenv(key, val)
+			}
+		}
+	}
 }
 
 // Load reads environment variables and returns a populated BotConfig.
 // It returns an error if any required variable is missing when not in paper/testnet mode.
 func Load() (*BotConfig, error) {
+	// Automatically load .env if it exists in the current directory
+	loadDotEnv()
+
 	cfg := &BotConfig{
 		BinanceAPIKey:    os.Getenv("BINANCE_API_KEY"),
 		BinanceAPISecret: os.Getenv("BINANCE_API_SECRET"),
@@ -75,6 +120,20 @@ func Load() (*BotConfig, error) {
 
 		TelegramBotToken: os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramChatID:   os.Getenv("TELEGRAM_CHAT_ID"),
+
+		SignalUpsideWeight:    getFloat64Env("SIGNAL_UPSIDE_WEIGHT", 0.50),
+		SignalRSIWeight:       getFloat64Env("SIGNAL_RSI_WEIGHT", 0.30),
+		SignalVolumeWeight:    getFloat64Env("SIGNAL_VOLUME_WEIGHT", 0.20),
+		SignalExtraBudgetUSDT: getFloat64Env("SIGNAL_EXTRA_BUDGET_USDT", 40.0),
+
+		MinVolume24hUSDT:   getFloat64Env("MIN_VOLUME_24H_USDT", 500_000),
+		MinTradeCount24h:   getIntEnv("MIN_TRADE_COUNT_24H", 5_000),
+		MaxPriceChange24h:  getFloat64Env("MAX_PRICE_CHANGE_24H_PCT", 40.0),
+		RugCandleBodyPct:   getFloat64Env("RUG_CANDLE_BODY_PCT", 15.0),
+		MinCandlesRequired: getIntEnv("MIN_CANDLES_REQUIRED", 50),
+
+		AutoDiscoverSymbols: getBoolEnv("AUTO_DISCOVER_SYMBOLS", false),
+		MaxWatchlistSize:    getIntEnv("MAX_WATCHLIST_SIZE", 50),
 	}
 
 	// Parse watchlist
