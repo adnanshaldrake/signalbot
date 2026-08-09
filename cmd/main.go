@@ -449,6 +449,7 @@ func runBackfill(cfg *config.BotConfig, db *store.DB) {
 }
 
 // runBacktest replays stored candles through Strategy2 with filters and prints results.
+// Uses RunnerV2 (native float64 indicators via pkg/strategy — zero techan/big).
 func runBacktest(cfg *config.BotConfig, db *store.DB) {
 	slog.Info("backtest starting")
 	symbols, err := db.ListSymbols()
@@ -457,7 +458,7 @@ func runBacktest(cfg *config.BotConfig, db *store.DB) {
 		os.Exit(1)
 	}
 
-	runner := backtest.NewRunner(db, cfg.MaxPositionUSDT).
+	runner := backtest.NewRunnerV2(db, cfg.MaxPositionUSDT).
 		WithRisk(cfg.StopLossPct, cfg.TakeProfitPct, 192).
 		WithFilters(backtest.FilterConfig{
 			MinRollingVolUSDT: cfg.MinVolume24hUSDT,
@@ -469,12 +470,12 @@ func runBacktest(cfg *config.BotConfig, db *store.DB) {
 	totalPnL := 0.0
 
 	for _, symbol := range symbols {
-		res, err := runner.RunSymbol(symbol, cfg.CandleInterval)
+		res, err := runner.RunSymbolV2(symbol, cfg.CandleInterval)
 		if err != nil {
 			slog.Warn("backtest: skip", "symbol", symbol, "error", err)
 			continue
 		}
-		backtest.PrintReport(res)
+		backtest.PrintReportV2(res)
 		totalPnL += res.TotalPnLUSDT
 	}
 
