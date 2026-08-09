@@ -121,52 +121,56 @@ func buildRollingWindow(candles []store.Candle, idx, windowSize int) filter.Roll
 	return window
 }
 
-// RunSymbol backtests over all stored candles for a given symbol and interval.
-// When WithFilters() has been called, per-candle eligibility checks are applied
-// at each step exactly as the live bot would, giving an honest simulation.
+// parseIntervalDuration maps a Binance interval string to a time.Duration.
+func parseIntervalDuration(interval string) time.Duration {
+	switch interval {
+	case "1m":
+		return time.Minute
+	case "3m":
+		return 3 * time.Minute
+	case "5m":
+		return 5 * time.Minute
+	case "15m":
+		return 15 * time.Minute
+	case "30m":
+		return 30 * time.Minute
+	case "1h":
+		return time.Hour
+	case "2h":
+		return 2 * time.Hour
+	case "4h":
+		return 4 * time.Hour
+	case "6h":
+		return 6 * time.Hour
+	case "8h":
+		return 8 * time.Hour
+	case "12h":
+		return 12 * time.Hour
+	case "1d":
+		return 24 * time.Hour
+	case "3d":
+		return 3 * 24 * time.Hour
+	case "1w":
+		return 7 * 24 * time.Hour
+	default:
+		return 15 * time.Minute
+	}
+}
+
+// RunSymbol backtests over all stored candles for a given symbol and interval,
+// processing data in 30-day chunks to bound memory usage regardless of how
+// much history is stored. When WithFilters() has been called, per-candle
+// eligibility checks are applied exactly as the live bot would.
 func (r *Runner) RunSymbol(symbol, interval string) (*Result, error) {
-	candles, err := r.db.GetCandles(symbol, interval, time.Time{}, time.Time{})
+	startRange, endRange, err := r.db.GetCandleRange(symbol, interval)
 	if err != nil {
-		return nil, fmt.Errorf("backtest: load candles for %s: %w", symbol, err)
-	}
-	minC := r.minCandles()
-	if len(candles) < minC {
-		return nil, fmt.Errorf("backtest: not enough candles for %s (got %d, need >=%d)", symbol, len(candles), minC)
-	}
-
-	// Build techan TimeSeries from stored candles
-	series := techan.NewTimeSeries()
-	for _, c := range candles {
-		period := techan.NewTimePeriod(c.OpenTime, time.Minute*15)
-		candle := techan.NewCandle(period)
-		candle.OpenPrice = big.NewFromString(fmt.Sprintf("%.8f", c.Open))
-		candle.MaxPrice = big.NewFromString(fmt.Sprintf("%.8f", c.High))
-		candle.MinPrice = big.NewFromString(fmt.Sprintf("%.8f", c.Low))
-		candle.ClosePrice = big.NewFromString(fmt.Sprintf("%.8f", c.Close))
-		candle.Volume = big.NewFromString(fmt.Sprintf("%.8f", c.Volume))
-		series.AddCandle(candle)
-	}
-
-	var strategy techan.RuleStrategy
-	if r.useStrategy2 {
-		strategy, err = app.Strategy2(series)
-	} else {
-		strategy, err = app.Strategy1(series)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("backtest: build strategy for %s: %w", symbol, err)
+		return nil, fmt.Errorf("backtest: get candle range for %s: %w", symbol, err)
 	}
 
 	result := &Result{
 		Symbol:           symbol,
 		FilterRejections: make(map[string]int),
 	}
-	record := techan.NewTradingRecord()
-
-	var openTrade *TradeRecord
-	var openedAtIdx int
-	peakPnL := 0.0
-	runningPnL := 0.0
 
 	// Build filter.Config from FilterConfig if filters are active.
 	var fCfg filter.Config
@@ -183,6 +187,11 @@ func (r *Runner) RunSymbol(symbol, interval string) (*Result, error) {
 			volWindow = 96 // 24h on 15m bars
 		}
 	}
+
+	var openTrade *TradeRecord
+	var openTradeHeldCandles int
+	peakPnL := 0.0
+	runningPnL := 0.0
 
 	closeTrade := func(exitPrice float64, exitTime time.Time, reason string) {
 		pnl := (exitPrice - openTrade.Price) / openTrade.Price * openTrade.QuoteValue
@@ -218,68 +227,125 @@ func (r *Runner) RunSymbol(symbol, interval string) (*Result, error) {
 		openTrade = nil
 	}
 
-	// Walk candles starting after the warm-up period.
-	warmUp := minC
-	for i := warmUp; i < len(candles); i++ {
-		currentPrice := candles[i].Close
+	minC := r.minCandles()
+	chunkDuration := 30 * 24 * time.Hour
+	intervalDuration := parseIntervalDuration(interval)
+	// Warmup: enough candles for the slowest indicator + volume window + buffer
+	warmupDuration := time.Duration(minC+volWindow+10) * intervalDuration
 
-		// --- Filter: emergency exit on open positions (rug-pull detection) ---
-		if openTrade != nil && r.filterCfg != nil && r.filterCfg.RugCandleBodyPct > 0 {
-			recentWindow := buildRollingWindow(candles, i+1, 3) // last 3 candles
-			if filter.ShouldEmergencyExit(recentWindow, fCfg) {
-				closeTrade(currentPrice, candles[i].OpenTime, "rug_exit")
-				result.FilterRejections["rug_exit"]++
-				continue
-			}
+	for currentStart := startRange; !currentStart.After(endRange); currentStart = currentStart.Add(chunkDuration) {
+		currentEnd := currentStart.Add(chunkDuration)
+		if currentEnd.After(endRange) {
+			currentEnd = endRange
 		}
 
-		if openTrade == nil && strategy.ShouldEnter(i, record) {
-			// --- Per-candle eligibility checks before accepting entry ---
-			if r.filterCfg != nil {
-				upperBB, _ := app.GetUpperBB(series, i)
-				lowerBB, _ := app.GetLowerBB(series, i)
-				middleBB, _ := app.GetMiddleBB(series, i)
-				window := buildRollingWindow(candles, i+1, volWindow)
+		fetchStart := currentStart.Add(-warmupDuration)
+		if fetchStart.Before(startRange) {
+			fetchStart = startRange
+		}
 
-				eligibility := filter.IsEligibleForEntry(
-					window, currentPrice,
-					upperBB, lowerBB, middleBB,
-					0, // tradeCount not available in backtest
-					fCfg,
-				)
-				if !eligibility.Eligible {
-					result.FilterRejections[eligibility.Reason]++
+		candles, err := r.db.GetCandles(symbol, interval, fetchStart, currentEnd)
+		if err != nil {
+			return nil, fmt.Errorf("backtest: load candles for %s: %w", symbol, err)
+		}
+
+		if len(candles) < minC {
+			if currentStart == startRange {
+				return nil, fmt.Errorf("backtest: not enough candles for %s (got %d, need >=%d)", symbol, len(candles), minC)
+			}
+			continue
+		}
+
+		// Build techan TimeSeries for this chunk
+		series := techan.NewTimeSeries()
+		for _, c := range candles {
+			period := techan.NewTimePeriod(c.OpenTime, intervalDuration)
+			candle := techan.NewCandle(period)
+			candle.OpenPrice = big.NewFromString(fmt.Sprintf("%.8f", c.Open))
+			candle.MaxPrice = big.NewFromString(fmt.Sprintf("%.8f", c.High))
+			candle.MinPrice = big.NewFromString(fmt.Sprintf("%.8f", c.Low))
+			candle.ClosePrice = big.NewFromString(fmt.Sprintf("%.8f", c.Close))
+			candle.Volume = big.NewFromString(fmt.Sprintf("%.8f", c.Volume))
+			series.AddCandle(candle)
+		}
+
+		var strategy techan.RuleStrategy
+		if r.useStrategy2 {
+			strategy, err = app.Strategy2(series)
+		} else {
+			strategy, err = app.Strategy1(series)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("backtest: build strategy for %s: %w", symbol, err)
+		}
+		record := techan.NewTradingRecord()
+
+		for i := minC; i < len(candles); i++ {
+			// Skip warmup candles that are before the current chunk window
+			if candles[i].OpenTime.Before(currentStart) {
+				continue
+			}
+
+			currentPrice := candles[i].Close
+
+			// Emergency exit on rug-pull candle (open positions only)
+			if openTrade != nil && r.filterCfg != nil && r.filterCfg.RugCandleBodyPct > 0 {
+				recentWindow := buildRollingWindow(candles, i+1, 3)
+				if filter.ShouldEmergencyExit(recentWindow, fCfg) {
+					closeTrade(currentPrice, candles[i].OpenTime, "rug_exit")
+					result.FilterRejections["rug_exit"]++
 					continue
 				}
 			}
 
-			qty := r.positionUSDT / currentPrice
-			openTrade = &TradeRecord{
-				Symbol:     symbol,
-				Side:       "BUY",
-				Price:      currentPrice,
-				Qty:        qty,
-				QuoteValue: r.positionUSDT,
-				Time:       candles[i].OpenTime,
-			}
-			openedAtIdx = i
-			result.Trades = append(result.Trades, *openTrade)
-			result.TotalTrades++
+			if openTrade == nil && strategy.ShouldEnter(i, record) {
+				// Per-candle eligibility checks before accepting entry
+				if r.filterCfg != nil {
+					upperBB, _ := app.GetUpperBB(series, i)
+					lowerBB, _ := app.GetLowerBB(series, i)
+					middleBB, _ := app.GetMiddleBB(series, i)
+					window := buildRollingWindow(candles, i+1, volWindow)
 
-		} else if openTrade != nil {
-			stopPrice := openTrade.Price * (1 - r.stopLossPct/100)
-			targetPrice := openTrade.Price * (1 + r.takeProfitPct/100)
-			heldCandles := i - openedAtIdx
+					eligibility := filter.IsEligibleForEntry(
+						window, currentPrice,
+						upperBB, lowerBB, middleBB,
+						0, // tradeCount not available in backtest
+						fCfg,
+					)
+					if !eligibility.Eligible {
+						result.FilterRejections[eligibility.Reason]++
+						continue
+					}
+				}
 
-			switch {
-			case currentPrice <= stopPrice:
-				closeTrade(currentPrice, candles[i].OpenTime, "stop_loss")
-			case currentPrice >= targetPrice:
-				closeTrade(currentPrice, candles[i].OpenTime, "take_profit")
-			case r.maxHoldCandles > 0 && heldCandles >= r.maxHoldCandles:
-				closeTrade(currentPrice, candles[i].OpenTime, "max_hold")
-			case strategy.ShouldExit(i, record):
-				closeTrade(currentPrice, candles[i].OpenTime, "strategy")
+				qty := r.positionUSDT / currentPrice
+				openTrade = &TradeRecord{
+					Symbol:     symbol,
+					Side:       "BUY",
+					Price:      currentPrice,
+					Qty:        qty,
+					QuoteValue: r.positionUSDT,
+					Time:       candles[i].OpenTime,
+				}
+				openTradeHeldCandles = 0
+				result.Trades = append(result.Trades, *openTrade)
+				result.TotalTrades++
+
+			} else if openTrade != nil {
+				openTradeHeldCandles++
+				stopPrice := openTrade.Price * (1 - r.stopLossPct/100)
+				targetPrice := openTrade.Price * (1 + r.takeProfitPct/100)
+
+				switch {
+				case currentPrice <= stopPrice:
+					closeTrade(currentPrice, candles[i].OpenTime, "stop_loss")
+				case currentPrice >= targetPrice:
+					closeTrade(currentPrice, candles[i].OpenTime, "take_profit")
+				case r.maxHoldCandles > 0 && openTradeHeldCandles >= r.maxHoldCandles:
+					closeTrade(currentPrice, candles[i].OpenTime, "max_hold")
+				case strategy.ShouldExit(i, record):
+					closeTrade(currentPrice, candles[i].OpenTime, "strategy")
+				}
 			}
 		}
 	}

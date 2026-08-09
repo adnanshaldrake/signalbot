@@ -144,6 +144,19 @@ func (db *DB) GetCandles(symbol, interval string, from, to time.Time) ([]Candle,
 	return candles, rows.Err()
 }
 
+// GetCandleRange returns the earliest and latest open_time for a given symbol and interval.
+func (db *DB) GetCandleRange(symbol, interval string) (time.Time, time.Time, error) {
+	var minMs, maxMs sql.NullInt64
+	query := `SELECT MIN(open_time), MAX(open_time) FROM candles WHERE symbol = ? AND interval = ?`
+	if err := db.conn.QueryRow(query, symbol, interval).Scan(&minMs, &maxMs); err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	if !minMs.Valid || !maxMs.Valid {
+		return time.Time{}, time.Time{}, fmt.Errorf("store: no data for %s %s", symbol, interval)
+	}
+	return time.UnixMilli(minMs.Int64), time.UnixMilli(maxMs.Int64), nil
+}
+
 // CountCandles returns how many candles are stored for a given symbol and interval.
 func (db *DB) CountCandles(symbol, interval string) (int, error) {
 	var count int
