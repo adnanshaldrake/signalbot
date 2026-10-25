@@ -113,12 +113,13 @@ func (s *Strategy) ShouldEnter(i int) bool {
 	if i < 1 || i >= len(s.series.Candles) {
 		return false
 	}
-	// Low crosses below lower Bollinger Band
-	if !indicators.CrossDown(s.lowSlice, s.lowerBB, i) {
-		return false
-	}
-	// RSI crosses above 30 (recovery from oversold)
-	if !indicators.CrossUpConst(s.rsi, 30.0, i) {
+	// We want to buy a bounce. It's rare for both the BB pierce AND the RSI cross
+	// to happen on the exact same 15m candle. Let's relax it:
+	// Entry condition: RSI crosses above 30, and price is at/below the lower BB.
+	rsiRecovering := indicators.CrossUpConst(s.rsi, 30.0, i) || indicators.CrossUpConst(s.rsi, 35.0, i)
+	priceLow := s.lowSlice[i] <= s.lowerBB[i]*1.005 // within 0.5% of lower BB
+
+	if !rsiRecovering || !priceLow {
 		return false
 	}
 	if s.useEMATrend {

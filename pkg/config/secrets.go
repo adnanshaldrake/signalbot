@@ -18,8 +18,9 @@ type BotConfig struct {
 	BinanceAPISecret string // BINANCE_API_SECRET — required for signed requests
 
 	// Trading mode
-	PaperTrading bool   // PAPER_TRADING — if true, simulate trades; default true
-	UseTestnet   bool   // USE_TESTNET — if true, point at testnet.binance.vision; default true
+	PaperTrading bool // PAPER_TRADING — if true, simulate trades; default true
+	UseTestnet   bool // USE_TESTNET — if true, point at testnet.binance.vision; default true
+	UseDemonet   bool // USE_DEMONET - if true, point at demo.binance.vision; default false
 
 	// Strategy parameters
 	CandleInterval string        // CANDLE_INTERVAL — e.g. "15m", "1h"; default "15m"
@@ -64,12 +65,24 @@ type BotConfig struct {
 	// Dynamic watchlist auto-discovery
 	AutoDiscoverSymbols bool // AUTO_DISCOVER_SYMBOLS — if true, ignore WATCHLIST and scan all USDT pairs; default false
 	MaxWatchlistSize    int  // MAX_WATCHLIST_SIZE — cap on auto-discovered symbols; default 50
+
+	BackfillDays int // BACKFILL_DAYS — if >0, fetches multiple batches of candles to go back this many days. default 0 (single batch).
+
+	// Startup symbol screener
+	ScreenOnStartup  bool    // SCREEN_ON_STARTUP — if true, auto-screen symbols on startup; default false
+	ScreenTopN       int     // SCREEN_TOP_N — top-N USDT symbols by volume to screen; default 40
+	ScreenMinWinRate float64 // SCREEN_MIN_WIN_RATE — minimum win rate % to keep a symbol; default 35.0
+	ScreenMinPnL     float64 // SCREEN_MIN_PNL — minimum total PnL USDT to keep a symbol; default 0.0
+	ScreenMinTrades  int     // SCREEN_MIN_TRADES — minimum backtest trades to keep a symbol; default 3
 }
 
 func loadDotEnv() {
 	file, err := os.Open(".env")
 	if err != nil {
-		return
+		file, err = os.Open(".env")
+		if err != nil {
+			return
+		}
 	}
 	defer file.Close()
 
@@ -102,6 +115,7 @@ func Load() (*BotConfig, error) {
 
 		PaperTrading: getBoolEnv("PAPER_TRADING", true),
 		UseTestnet:   getBoolEnv("USE_TESTNET", true),
+		UseDemonet:   getBoolEnv("USE_DEMONET", true),
 
 		CandleInterval: getStringEnv("CANDLE_INTERVAL", "15m"),
 		CandleLimit:    getIntEnv("CANDLE_LIMIT", 100),
@@ -134,6 +148,13 @@ func Load() (*BotConfig, error) {
 
 		AutoDiscoverSymbols: getBoolEnv("AUTO_DISCOVER_SYMBOLS", false),
 		MaxWatchlistSize:    getIntEnv("MAX_WATCHLIST_SIZE", 50),
+		BackfillDays:        getIntEnv("BACKFILL_DAYS", 0),
+
+		ScreenOnStartup:  getBoolEnv("SCREEN_ON_STARTUP", false),
+		ScreenTopN:       getIntEnv("SCREEN_TOP_N", 40),
+		ScreenMinWinRate: getFloat64Env("SCREEN_MIN_WIN_RATE", 35.0),
+		ScreenMinPnL:     getFloat64Env("SCREEN_MIN_PNL", 0.0),
+		ScreenMinTrades:  getIntEnv("SCREEN_MIN_TRADES", 3),
 	}
 
 	// Parse watchlist

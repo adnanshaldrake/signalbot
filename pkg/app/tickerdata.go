@@ -170,8 +170,7 @@ func GetTimeSeries(symbol string) (*techan.TimeSeries, error) {
 	series := techan.NewTimeSeries()
 	for idx := range ticker {
 		start := ticker[idx][0].(float64)
-		period := techan.NewTimePeriod(time.Unix(int64(start)/1000, 0), time.Second*3599)
-
+		period := techan.NewTimePeriod(time.Unix(int64(start)/1000, 0), time.Minute*15)
 		candle := techan.NewCandle(period)
 		candle.OpenPrice = big.NewFromString(ticker[idx][1].(string))
 		candle.MaxPrice = big.NewFromString(ticker[idx][2].(string))
@@ -210,7 +209,7 @@ func GetActiveSymbols(minVolUSDT float64, minTradeCount, maxSymbols int) ([]stri
 	}
 
 	type candidate struct {
-		symbol string
+		symbol  string
 		volUSDT float64
 	}
 	var candidates []candidate

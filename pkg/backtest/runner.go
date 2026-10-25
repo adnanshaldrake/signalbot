@@ -329,7 +329,6 @@ func (r *Runner) RunSymbol(symbol, interval string) (*Result, error) {
 				}
 				openTradeHeldCandles = 0
 				result.Trades = append(result.Trades, *openTrade)
-				result.TotalTrades++
 
 			} else if openTrade != nil {
 				openTradeHeldCandles++

@@ -1,19 +1,43 @@
-Step 1: Testnet (Fake money, real API)
+# signalbot
 
-Go to Binance Spot Testnet, log in with Github, and generate an API Key.
-In your .env:
-BINANCE_API_KEY=your_testnet_key
-BINANCE_API_SECRET=your_testnet_secret
-PAPER_TRADING=false
-USE_TESTNET=true
-Run the bot. It will place real HTTP requests, but against Binance's fake-money test environment.
-Step 2: Mainnet (Real money, real API)
+Binance altcoin trading bot. BB + RSI mean-reversion strategy with paper trading, backtesting, and Telegram alerts.
 
-Generate an API key on your real Binance account (ensure it has "Spot Trading" enabled, but disable Withdrawals for safety).
-In your .env:
-BINANCE_API_KEY=your_real_key
-BINANCE_API_SECRET=your_real_secret
-PAPER_TRADING=false
-USE_TESTNET=false
-Run the bot. You are now live.
-Give source .env && go run ./cmd/main.go a try right now to see the logs flow!
+## Setup
+
+```bash
+cp .env.example .env
+# fill in your values
+```
+
+## Run
+
+```bash
+# Paper trading (safe default)
+go run ./cmd/main.go
+
+# Backfill historical candles first
+go run ./cmd/main.go --backfill
+
+# Backtest
+go run ./cmd/main.go --backtest
+```
+
+## Docker
+
+```bash
+docker compose up -d
+```
+
+## Deploy (Railway / Fly.io / any VPS)
+
+1. Set your `.env` vars as environment variables on the platform
+2. Point Redis at your Redis service (`REDIS_URL`)
+3. Push — the Dockerfile handles the rest
+
+## Trading Modes
+
+| `.env` setting | Effect |
+|---|---|
+| `PAPER_TRADING=true` | Simulated trades, no real orders |
+| `USE_TESTNET=true` | Real API calls against Binance testnet (fake money) |
+| Both false | **Live trading with real money** |

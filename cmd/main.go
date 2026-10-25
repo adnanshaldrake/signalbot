@@ -21,6 +21,7 @@ import (
 	"adnan/binance-bot/pkg/notify"
 	"adnan/binance-bot/pkg/paper"
 	"adnan/binance-bot/pkg/risk"
+	"adnan/binance-bot/pkg/screener"
 	"adnan/binance-bot/pkg/signals"
 	"adnan/binance-bot/pkg/state"
 	"adnan/binance-bot/pkg/store"
@@ -103,8 +104,16 @@ func runBot(cfg *config.BotConfig, db *store.DB) {
 	// Real Binance client (used when PaperTrading=false)
 	binanceClient := binance.NewClient(cfg)
 
+	if err := binanceClient.SyncTime(); err != nil {
+		slog.Error("Failed to sync time with Binance", "error", err)
+	}
+
+	if err := binanceClient.LoadExchangeInfo(); err != nil {
+		slog.Error("Failed to load exchange info", "error", err)
+	}
+
 	// Resolve watchlist
-	watchlist, err := resolveWatchlist(cfg)
+	watchlist, err := resolveWatchlist(cfg, db)
 	if err != nil {
 		slog.Error("failed to resolve watchlist", "error", err)
 		os.Exit(1)
@@ -167,10 +176,8 @@ func runCycle(
 		RugCandleBodyPct:  cfg.RugCandleBodyPct,
 		MinBBBandwidth:    0.01,
 	}
-
 	// --- Phase 1: exits + collect entry candidates ---
 	var candidates []signals.Candidate
-
 	for _, symbol := range watchlist {
 		select {
 		case <-ctx.Done():
@@ -185,6 +192,7 @@ func runCycle(
 		}
 		// Require minimum candles for Strategy2 warm-up (EMA200 needs 200 bars)
 		if len(series.Candles) < cfg.MinCandlesRequired {
+			slog.Warn("Minimun candles required not found", "symbol", symbol)
 			continue
 		}
 
@@ -193,17 +201,14 @@ func runCycle(
 			slog.Warn("Strategy2 failed", "symbol", symbol, "error", err)
 			continue
 		}
-
 		lastIdx := len(series.Candles) - 1
 		currentPrice, _ := strconv.ParseFloat(series.Candles[lastIdx].ClosePrice.String(), 64)
-
 		// --- Check exits on open positions ---
 		pos, err := stateMgr.GetPosition(ctx, symbol)
 		if err != nil {
 			slog.Warn("GetPosition failed", "symbol", symbol, "error", err)
 			continue
 		}
-
 		if pos != nil {
 			// Build a rolling window from the last 3 candles for rug-pull detection
 			nCandles := len(series.Candles)
@@ -312,7 +317,6 @@ func runCycle(
 			slog.Debug("entry_filter_blocked", "symbol", symbol, "reason", eligibility.Reason)
 			continue
 		}
-
 		candidates = append(candidates, signals.Candidate{
 			Symbol:        symbol,
 			CurrentPrice:  currentPrice,
@@ -364,11 +368,25 @@ func runCycle(
 			}
 			// Record position from real fill data
 			filledQty, _ := strconv.ParseFloat(resp.ExecutedQty, 64)
+
+			// Calculate any fees deducted directly from the base asset
+			var baseAssetCommission float64
+			for _, fill := range resp.Fills {
+				if fill.CommissionAsset != "USDT" && fill.CommissionAsset != "BNB" {
+					comm, _ := strconv.ParseFloat(fill.Commission, 64)
+					baseAssetCommission += comm
+				}
+			}
+
+			// Compute the actual net quantity available in your wallet
+			netQuantity := filledQty - baseAssetCommission
+
+			// Record position using the accurate net quantity
 			pos := state.Position{
 				Symbol:     candidate.Symbol,
 				Side:       "BUY",
 				EntryPrice: candidate.CurrentPrice,
-				Quantity:   filledQty,
+				Quantity:   netQuantity, // Use net quantity after fees
 				QuoteSpent: decision.Quantity,
 				OrderID:    resp.OrderID,
 				OpenedAt:   time.Now(),
@@ -393,7 +411,7 @@ func runCycle(
 // runBackfill downloads and stores historical candles for all watchlist symbols.
 func runBackfill(cfg *config.BotConfig, db *store.DB) {
 	slog.Info("backfill starting")
-	watchlist, err := resolveWatchlist(cfg)
+	watchlist, err := resolveWatchlist(cfg, db)
 	if err != nil {
 		slog.Error("backfill: resolve watchlist", "error", err)
 		os.Exit(1)
@@ -461,11 +479,11 @@ func runBacktest(cfg *config.BotConfig, db *store.DB) {
 	runner := backtest.NewRunnerV2(db, cfg.MaxPositionUSDT).
 		WithRisk(cfg.StopLossPct, cfg.TakeProfitPct, 192).
 		WithFilters(backtest.FilterConfig{
-			MinRollingVolUSDT: cfg.MinVolume24hUSDT,
+			MinRollingVolUSDT: cfg.MinVolume24hUSDT / 2, // relax volume
 			RugCandleBodyPct:  cfg.RugCandleBodyPct,
 			MaxPriceChangePct: cfg.MaxPriceChange24h,
-			MinBBBandwidth:    0.01,
-			RequireEMATrend:   true,
+			MinBBBandwidth:    0.0,   // disable BB bandwidth filter
+			RequireEMATrend:   false, // disable trend gate
 		})
 	totalPnL := 0.0
 
@@ -482,9 +500,25 @@ func runBacktest(cfg *config.BotConfig, db *store.DB) {
 	slog.Info("backtest complete", "total_pnl_usdt", fmt.Sprintf("$%.4f", totalPnL))
 }
 
-// resolveWatchlist returns the configured watchlist, auto-discovers active USDT pairs
-// if AUTO_DISCOVER_SYMBOLS=true, or fetches all USDT pairs if WATCHLIST is empty.
-func resolveWatchlist(cfg *config.BotConfig) ([]string, error) {
+// resolveWatchlist returns the watchlist to trade. Priority order:
+//  1. SCREEN_ON_STARTUP=true  — backfill + backtest top-N symbols, keep profitable ones
+//  2. AUTO_DISCOVER_SYMBOLS=true — pick top-N by 24h volume (no backtest)
+//  3. WATCHLIST env var — use the static list
+//  4. fallback — fetch all USDT pairs from Binance
+func resolveWatchlist(cfg *config.BotConfig, db *store.DB) ([]string, error) {
+	if cfg.ScreenOnStartup {
+		slog.Info("startup screener enabled",
+			"top_n", cfg.ScreenTopN,
+			"min_win_rate", cfg.ScreenMinWinRate,
+			"min_pnl", cfg.ScreenMinPnL,
+		)
+		result := screener.Run(cfg, db, cfg.Watchlist)
+		if len(result) > 0 {
+			return result, nil
+		}
+		// screener already logged a warning and returned the fallback
+		return result, nil
+	}
 	if cfg.AutoDiscoverSymbols {
 		slog.Info("auto-discovering active USDT pairs", "min_vol_usdt", cfg.MinVolume24hUSDT, "max", cfg.MaxWatchlistSize)
 		return app.GetActiveSymbols(cfg.MinVolume24hUSDT, cfg.MinTradeCount24h, cfg.MaxWatchlistSize)

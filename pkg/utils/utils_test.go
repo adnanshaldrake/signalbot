@@ -1,13 +1,11 @@
-package tests
+package utils
 
 import (
 	"bytes"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"reflect"
 	"testing"
-
-	"adnan/binance-bot/pkg/utils"
 )
 
 type MockHTTPClient struct {
@@ -22,14 +20,14 @@ func (c *MockHTTPClient) Do(req *http.Request) (*http.Response, error) {
 func TestChunkSlice(t *testing.T) {
 	// Test case 1: slice is nil
 	slice := []string(nil)
-	chunks, err := utils.ChunkSlice(slice, 3)
+	chunks, err := ChunkSlice(slice, 3)
 	if chunks != nil || err == nil {
 		t.Errorf("ChunkSlice(%v, %d) = (%v, %v); expected (nil, error)", slice, 3, chunks, err)
 	}
 
 	// Test case 2: chunk size is less than 1
 	slice = []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}
-	chunks, err = utils.ChunkSlice(slice, 0)
+	chunks, err = ChunkSlice(slice, 0)
 	if chunks != nil || err == nil {
 		t.Errorf("ChunkSlice(%v, %d) = (%v, %v); expected (nil, error)", slice, 0, chunks, err)
 	}
@@ -37,7 +35,7 @@ func TestChunkSlice(t *testing.T) {
 	// Test case 3: slice is not empty and chunk size is valid
 	slice = []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}
 	expectedChunks := [][]string{{"a", "b", "c"}, {"d", "e", "f"}, {"g", "h", "i"}}
-	chunks, err = utils.ChunkSlice(slice, 3)
+	chunks, err = ChunkSlice(slice, 3)
 	if err != nil {
 		t.Errorf("ChunkSlice(%v, %d) returned error: %v", slice, 3, err)
 	}
@@ -51,13 +49,13 @@ func TestGetData(t *testing.T) {
 	client := &MockHTTPClient{
 		Response: &http.Response{
 			StatusCode: http.StatusOK,
-			Body:       ioutil.NopCloser(bytes.NewBufferString("test response body")),
+			Body:       io.NopCloser(bytes.NewBufferString("test response body")),
 		},
 		Err: nil,
 	}
 
 	// Call the function being tested with the mock client
-	body, err := utils.GetData(client, "/test")
+	body, err := GetData(client, "/test")
 
 	// Check that the function returned the expected result
 	if err != nil {
