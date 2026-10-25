@@ -1,3 +1,4 @@
+// Package app provides the core trading application logic.
 package app
 
 import (
@@ -7,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -15,14 +17,72 @@ import (
 	"github.com/sdcoffey/techan"
 )
 
-func GetSymbolList() ([]string, error) {
-	/*
-		Returns a list of trading symbols relevant to the 'USDT' quote asset.
+// TickerCache is the interface for storing and retrieving raw candlestick JSON.
+// There are two implementations: InMemoryCache (no dependencies) and RedisCache.
+type TickerCache interface {
+	Set(symbol, data string) error
+	Get(symbol string) (string, error)
+}
 
-		Returns:
-		- []string: List of trading symbols relevant to the 'USDT' quote asset.
-		- error: An error, if any occurred.
-	*/
+// --- In-memory cache (default, no Redis required) ---
+
+// InMemoryCache stores ticker JSON in a plain Go map with a read/write mutex.
+type InMemoryCache struct {
+	mu   sync.RWMutex
+	data map[string]string
+}
+
+// NewInMemoryCache creates a new InMemoryCache.
+func NewInMemoryCache() *InMemoryCache {
+	return &InMemoryCache{data: make(map[string]string)}
+}
+
+func (c *InMemoryCache) Set(symbol, data string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.data[symbol] = data
+	return nil
+}
+
+func (c *InMemoryCache) Get(symbol string) (string, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	v, ok := c.data[symbol]
+	if !ok {
+		return "", fmt.Errorf("symbol %s not found in cache", symbol)
+	}
+	return v, nil
+}
+
+// --- Module-level cache instance ---
+// Initialised once via InitCache; defaults to in-memory if Redis is not configured.
+var globalCache TickerCache
+
+// InitCache sets up the ticker cache based on configuration.
+// Call this once at startup before using LoadTickerData / GetTimeSeries.
+func InitCache(cfg *config.BotConfig) {
+	if cfg.RedisURL != "" && cfg.RedisURL != "localhost:6379" {
+		// Redis URL explicitly configured — use Redis
+		globalCache = newRedisCache(cfg)
+	} else {
+		// No Redis configured (or default placeholder) — use in-memory
+		globalCache = NewInMemoryCache()
+	}
+}
+
+// SetCache allows injecting a custom cache (useful for testing).
+func SetCache(c TickerCache) { globalCache = c }
+
+func getCache() TickerCache {
+	if globalCache == nil {
+		// Safety: auto-init to in-memory if InitCache was never called
+		globalCache = NewInMemoryCache()
+	}
+	return globalCache
+}
+
+// GetSymbolList returns all USDT spot trading pairs from Binance.
+func GetSymbolList() ([]string, error) {
 	var symbolList []string
 	var client utils.HTTPClient = &http.Client{}
 
@@ -36,60 +96,47 @@ func GetSymbolList() ([]string, error) {
 		return nil, fmt.Errorf("failed to unmarshal response: %s", err)
 	}
 
-	// Get all symbols with the USDT quote asset
 	for _, symbol := range parsed.Symbols {
-		if symbol.QuoteAsset == "USDT" {
+		if symbol.QuoteAsset == "USDT" &&
+			symbol.Status == "TRADING" &&
+			symbol.IsSpotTradingAllowed {
 			symbolList = append(symbolList, symbol.Symbol)
 		}
 	}
-
 	return symbolList, nil
 }
 
+// LoadTickerData fetches candlestick data for each symbol concurrently and stores
+// it in the configured cache (in-memory or Redis).
 func LoadTickerData(symbolList []string, limit int) error {
-	/*
-		LoadTickerData loads ticker data for each symbol in symbolList
-		and stores it in Redis.
-		It uses a goroutine for each symbol to fetch the data asynchronously,
-		and uses a pipeline to efficiently store the data in Redis.
+	return LoadTickerDataWithInterval(symbolList, limit, "15m")
+}
 
-		Parameters:
-		- limit: The maximum number of data points to retrieve per symbol.
-
-		Returns:
-		- error: An error if there was a problem getting the symbol list or storing data in Redis.
-	*/
+// LoadTickerDataWithInterval is the same as LoadTickerData but lets the caller
+// specify the candle interval explicitly.
+func LoadTickerDataWithInterval(symbolList []string, limit int, interval string) error {
 	var client utils.HTTPClient = &http.Client{}
-
-	rdb, err := utils.GetRedisClient()
-	if err != nil {
-		return fmt.Errorf("failed to get Redis client %v\n", err)
-	}
-
-	ctx, cancel := utils.GetContextWithTimeout(10)
-	defer cancel()
-	// pipeline := rdb.Pipeline()
+	cache := getCache()
 
 	var wg sync.WaitGroup
 	errChan := make(chan error, len(symbolList))
 
 	for _, symbol := range symbolList {
-		wg.Add((1))
+		wg.Add(1)
 		go func(symbol string) {
 			defer wg.Done()
 
-			interval := "1h"
 			endpointUrl := fmt.Sprintf(
 				"%s?interval=%s&limit=%s&symbol=%s",
 				config.CandleStick.String(), interval, strconv.Itoa(limit), symbol,
 			)
 			body, err := utils.GetData(client, endpointUrl)
 			if err != nil {
-				errChan <- fmt.Errorf("failed to get data for symbol %s: %v", symbol, err)
+				errChan <- fmt.Errorf("failed to get data for %s: %v", symbol, err)
 				return
 			}
-			if err := rdb.HSet(ctx, symbol, "ticker", string(body)).Err(); err != nil {
-				errChan <- fmt.Errorf("failed to store data for symbol %s in Redis: %v", symbol, err)
+			if err := cache.Set(symbol, string(body)); err != nil {
+				errChan <- fmt.Errorf("failed to cache data for %s: %v", symbol, err)
 			}
 		}(symbol)
 	}
@@ -107,50 +154,105 @@ func LoadTickerData(symbolList []string, limit int) error {
 	return nil
 }
 
-// TODO Update to handle multiple symbols in goroutines
+// GetTimeSeries builds a techan.TimeSeries for a symbol from the cache.
 func GetTimeSeries(symbol string) (*techan.TimeSeries, error) {
-	/*
-		Generate and return a techan timeseries object when
-		given a symbol using data stored in Redis in the
-		<symbol> hash's 'ticker' field.
-		symbol: Trading symbol to retrieve the timeseries for.
-		return: A techan.Timeseries object, error
-	*/
-
-	ctx, cancel := utils.GetContextWithTimeout(10)
-	defer cancel()
-
-	rdb, err := utils.GetRedisClient()
+	cache := getCache()
+	result, err := cache.Get(symbol)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get Redis client %v\n", err)
-	}
-	defer rdb.Close()
-
-	series := techan.NewTimeSeries()
-
-	result, err := rdb.HGet(ctx, symbol, "ticker").Result()
-	if err != nil {
-		return nil, fmt.Errorf("error while doing HGET command in gredis : %v", err)
+		return nil, fmt.Errorf("cache miss for %s: %v", symbol, err)
 	}
 
 	var ticker [][]interface{}
 	if err := json.Unmarshal([]byte(result), &ticker); err != nil {
-		return nil, fmt.Errorf("error while unmarshalling JSON data : %v", err)
+		return nil, fmt.Errorf("unmarshal ticker for %s: %v", symbol, err)
 	}
 
+	series := techan.NewTimeSeries()
 	for idx := range ticker {
 		start := ticker[idx][0].(float64)
-		period := techan.NewTimePeriod(time.Unix(int64(start)/1000, 0), time.Second*3599)
-
+		period := techan.NewTimePeriod(time.Unix(int64(start)/1000, 0), time.Minute*15)
 		candle := techan.NewCandle(period)
 		candle.OpenPrice = big.NewFromString(ticker[idx][1].(string))
 		candle.MaxPrice = big.NewFromString(ticker[idx][2].(string))
 		candle.MinPrice = big.NewFromString(ticker[idx][3].(string))
 		candle.ClosePrice = big.NewFromString(ticker[idx][4].(string))
 		candle.Volume = big.NewFromString(ticker[idx][5].(string))
-
 		series.AddCandle(candle)
 	}
-
 	return series, nil
+}
+
+// ticker24h is the minimal subset of the Binance /api/v3/ticker/24hr response
+// that we need for auto-discovering active USDT pairs.
+type ticker24h struct {
+	Symbol             string `json:"symbol"`
+	QuoteVolume        string `json:"quoteVolume"`        // 24h volume in quote asset (USDT)
+	Count              int    `json:"count"`              // number of trades in 24h
+	PriceChangePercent string `json:"priceChangePercent"` // e.g. "3.25" or "-1.80"
+}
+
+// GetActiveSymbols calls the Binance 24hr ticker and returns up to maxSymbols
+// USDT spot pairs that meet the minimum volume and trade count thresholds,
+// sorted by 24h USDT volume descending (most liquid first).
+// Pass minTradeCount=0 to skip the trade-count filter.
+func GetActiveSymbols(minVolUSDT float64, minTradeCount, maxSymbols int) ([]string, error) {
+	var client utils.HTTPClient = &http.Client{Timeout: 10 * time.Second}
+
+	body, err := utils.GetData(client, config.DailyTicker.String())
+	if err != nil {
+		return nil, fmt.Errorf("GetActiveSymbols: fetch 24hr ticker: %w", err)
+	}
+
+	var tickers []ticker24h
+	if err := json.Unmarshal(body, &tickers); err != nil {
+		return nil, fmt.Errorf("GetActiveSymbols: unmarshal: %w", err)
+	}
+
+	validSymbols, err := GetSymbolList()
+	var validMap map[string]bool
+	if err == nil && len(validSymbols) > 0 {
+		validMap = make(map[string]bool, len(validSymbols))
+		for _, s := range validSymbols {
+			validMap[s] = true
+		}
+	}
+
+	type candidate struct {
+		symbol  string
+		volUSDT float64
+	}
+	var candidates []candidate
+
+	for _, t := range tickers {
+		if validMap != nil && !validMap[t.Symbol] {
+			continue
+		}
+		// Only USDT quote pairs
+		if len(t.Symbol) < 5 || t.Symbol[len(t.Symbol)-4:] != "USDT" {
+			continue
+		}
+		vol, err := strconv.ParseFloat(t.QuoteVolume, 64)
+		if err != nil || vol < minVolUSDT {
+			continue
+		}
+		if minTradeCount > 0 && t.Count < minTradeCount {
+			continue
+		}
+		candidates = append(candidates, candidate{symbol: t.Symbol, volUSDT: vol})
+	}
+
+	// Sort by volume descending (highest liquidity first)
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].volUSDT > candidates[j].volUSDT
+	})
+
+	if maxSymbols > 0 && len(candidates) > maxSymbols {
+		candidates = candidates[:maxSymbols]
+	}
+
+	symbols := make([]string, len(candidates))
+	for i, c := range candidates {
+		symbols[i] = c.symbol
+	}
+	return symbols, nil
 }

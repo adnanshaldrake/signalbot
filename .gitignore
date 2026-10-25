@@ -1,5 +1,18 @@
-main
-**/go.mod
-**/go.sum
-**/*.json
-**/*.rdb
+# Build output
+signalbot
+cmd/tools/count
+
+# Secrets — never commit the real .env
+.env
+
+# SQLite historical data
+data/
+*.sqlite3
+*.db
+
+# Redis dump
+*.rdb
+
+# Profiling output
+*.prof
+*.log
