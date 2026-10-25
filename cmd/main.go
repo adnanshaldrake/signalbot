@@ -118,7 +118,23 @@ func runBot(cfg *config.BotConfig, db *store.DB) {
 		slog.Error("failed to resolve watchlist", "error", err)
 		os.Exit(1)
 	}
-	slog.Info("watchlist resolved", "count", len(watchlist))
+
+	// Filter out any symbol that is not currently in TRADING status or market is closed
+	var activeWatchlist []string
+	for _, sym := range watchlist {
+		if binanceClient.IsMarketOpen(sym) {
+			activeWatchlist = append(activeWatchlist, sym)
+		} else {
+			slog.Warn("excluding symbol from watchlist — market closed or not trading", "symbol", sym)
+		}
+	}
+	watchlist = activeWatchlist
+
+	if len(watchlist) == 0 {
+		slog.Warn("active watchlist is empty — bot will not place orders until active symbols are available")
+	} else {
+		slog.Info("watchlist resolved", "count", len(watchlist), "symbols", watchlist)
+	}
 
 	mode := tradingMode(cfg)
 	notifier.BotStarted(mode, cfg.CandleInterval, len(watchlist))
@@ -159,6 +175,10 @@ func runCycle(
 	paperTrader *paper.Trader,
 	binanceClient *binance.Client,
 ) {
+	if len(watchlist) == 0 {
+		slog.Info("cycle start — watchlist is empty, skipping cycle", "time", time.Now().UTC().Format(time.RFC3339))
+		return
+	}
 	slog.Info("cycle start", "symbols", len(watchlist), "time", time.Now().UTC().Format(time.RFC3339))
 
 	// Fetch fresh candlestick data into the cache (in-memory or Redis)
@@ -183,6 +203,11 @@ func runCycle(
 		case <-ctx.Done():
 			return
 		default:
+		}
+
+		if !binanceClient.IsMarketOpen(symbol) {
+			slog.Debug("market closed or not trading, skipping symbol", "symbol", symbol)
+			continue
 		}
 
 		series, err := app.GetTimeSeries(symbol)
@@ -500,34 +525,33 @@ func runBacktest(cfg *config.BotConfig, db *store.DB) {
 	slog.Info("backtest complete", "total_pnl_usdt", fmt.Sprintf("$%.4f", totalPnL))
 }
 
-// resolveWatchlist returns the watchlist to trade. Priority order:
-//  1. SCREEN_ON_STARTUP=true  — backfill + backtest top-N symbols, keep profitable ones
-//  2. AUTO_DISCOVER_SYMBOLS=true — pick top-N by 24h volume (no backtest)
-//  3. WATCHLIST env var — use the static list
-//  4. fallback — fetch all USDT pairs from Binance
+// resolveWatchlist returns the watchlist to trade.
+// Priority order:
+//  1. Screener: dynamically backtests candidates from Binance, keeps profitable pairs (primary)
+//  2. User WATCHLIST: fallback if screener yields no symbols or if SCREEN_ON_STARTUP=false
 func resolveWatchlist(cfg *config.BotConfig, db *store.DB) ([]string, error) {
 	if cfg.ScreenOnStartup {
-		slog.Info("startup screener enabled",
+		slog.Info("running startup screener to discover active watchlist",
 			"top_n", cfg.ScreenTopN,
 			"min_win_rate", cfg.ScreenMinWinRate,
 			"min_pnl", cfg.ScreenMinPnL,
+			"min_trades", cfg.ScreenMinTrades,
 		)
-		result := screener.Run(cfg, db, cfg.Watchlist)
-		if len(result) > 0 {
-			return result, nil
+		screened := screener.Run(cfg, db)
+		if len(screened) > 0 {
+			slog.Info("screener selected symbols for trading", "count", len(screened), "symbols", screened)
+			return screened, nil
 		}
-		// screener already logged a warning and returned the fallback
-		return result, nil
+		slog.Warn("screener yielded 0 symbols — falling back to user watchlist")
 	}
-	if cfg.AutoDiscoverSymbols {
-		slog.Info("auto-discovering active USDT pairs", "min_vol_usdt", cfg.MinVolume24hUSDT, "max", cfg.MaxWatchlistSize)
-		return app.GetActiveSymbols(cfg.MinVolume24hUSDT, cfg.MinTradeCount24h, cfg.MaxWatchlistSize)
-	}
+
 	if len(cfg.Watchlist) > 0 {
+		slog.Info("using user-configured watchlist as fallback", "count", len(cfg.Watchlist), "symbols", cfg.Watchlist)
 		return cfg.Watchlist, nil
 	}
-	slog.Info("no watchlist configured, fetching all USDT pairs from Binance")
-	return app.GetSymbolList()
+
+	slog.Warn("no screened symbols available and no user watchlist configured")
+	return nil, nil
 }
 
 // tradingMode returns a human-readable mode string.

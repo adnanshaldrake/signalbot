@@ -27,9 +27,13 @@ const (
 )
 
 type SymbolFilter struct {
-	StepSize float64
-	MinQty   float64
-	Decimals int
+	Status                     string
+	IsSpotTradingAllowed       bool
+	QuoteOrderQtyMarketAllowed bool
+	MinNotional                float64
+	StepSize                   float64
+	MinQty                     float64
+	Decimals                   int
 }
 
 // OrderSide represents BUY or SELL.
@@ -103,9 +107,11 @@ type Client struct {
 
 type ExchangeInfoResponse struct {
 	Symbols []struct {
-		Symbol  string                   `json:"symbol"`
-		Status  string                   `json:"status"`
-		Filters []map[string]interface{} `json:"filters"`
+		Symbol                     string                   `json:"symbol"`
+		Status                     string                   `json:"status"`
+		IsSpotTradingAllowed       bool                     `json:"isSpotTradingAllowed"`
+		QuoteOrderQtyMarketAllowed bool                     `json:"quoteOrderQtyMarketAllowed"`
+		Filters                    []map[string]interface{} `json:"filters"`
 	} `json:"symbols"`
 }
 
@@ -163,32 +169,68 @@ func (c *Client) LoadExchangeInfo() error {
 		return fmt.Errorf("LoadExchangeInfo unmarshal: %w", err)
 	}
 
-	c.exchangeRules = make(map[string]SymbolFilter)
+	c.exchangeRules = make(map[string]SymbolFilter, len(data.Symbols))
 
 	for _, s := range data.Symbols {
-		if s.Status != "TRADING" {
-			continue
-		}
+		var stepSize float64
+		var minQty float64
+		var minNotional float64
+		var decimals int
+
 		for _, filter := range s.Filters {
-			if filter["filterType"] == "LOT_SIZE" {
+			filterType, _ := filter["filterType"].(string)
+			switch filterType {
+			case "LOT_SIZE":
 				stepSizeStr, _ := filter["stepSize"].(string)
 				minQtyStr, _ := filter["minQty"].(string)
-
-				stepSize, _ := strconv.ParseFloat(stepSizeStr, 64)
-				minQty, _ := strconv.ParseFloat(minQtyStr, 64)
-
-				// Calculate decimal places dynamically from stepSize string
-				decimals := getDecimals(stepSizeStr)
-
-				c.exchangeRules[s.Symbol] = SymbolFilter{
-					StepSize: stepSize,
-					MinQty:   minQty,
-					Decimals: decimals,
+				stepSize, _ = strconv.ParseFloat(stepSizeStr, 64)
+				minQty, _ = strconv.ParseFloat(minQtyStr, 64)
+				decimals = getDecimals(stepSizeStr)
+			case "NOTIONAL":
+				minNotionalStr, _ := filter["minNotional"].(string)
+				minNotional, _ = strconv.ParseFloat(minNotionalStr, 64)
+			case "MIN_NOTIONAL":
+				if minNotional == 0 {
+					minNotionalStr, _ := filter["minNotional"].(string)
+					minNotional, _ = strconv.ParseFloat(minNotionalStr, 64)
 				}
 			}
 		}
+
+		c.exchangeRules[s.Symbol] = SymbolFilter{
+			Status:                     s.Status,
+			IsSpotTradingAllowed:       s.IsSpotTradingAllowed,
+			QuoteOrderQtyMarketAllowed: s.QuoteOrderQtyMarketAllowed,
+			MinNotional:                minNotional,
+			StepSize:                   stepSize,
+			MinQty:                     minQty,
+			Decimals:                   decimals,
+		}
 	}
 	return nil
+}
+
+// IsMarketOpen returns true if the symbol exists in exchange info,
+// its status is "TRADING", and spot trading is allowed.
+// Returns true by default if exchange rules haven't been loaded.
+func (c *Client) IsMarketOpen(symbol string) bool {
+	if c == nil || len(c.exchangeRules) == 0 {
+		return true
+	}
+	rule, exists := c.exchangeRules[symbol]
+	if !exists {
+		return false
+	}
+	return rule.Status == "TRADING" && rule.IsSpotTradingAllowed
+}
+
+// GetSymbolFilter returns the SymbolFilter for the given symbol if present.
+func (c *Client) GetSymbolFilter(symbol string) (SymbolFilter, bool) {
+	if c == nil || len(c.exchangeRules) == 0 {
+		return SymbolFilter{}, false
+	}
+	rule, exists := c.exchangeRules[symbol]
+	return rule, exists
 }
 
 // Helper to count decimal places from a scientific notation or float string
@@ -260,6 +302,25 @@ func (c *Client) GetUSDTBalance() (float64, error) {
 // PlaceMarketOrder places a MARKET order for the given symbol and side.
 // quoteQty is the USDT amount to spend (for BUY) or the base asset quantity (for SELL).
 func (c *Client) PlaceMarketOrder(symbol string, side OrderSide, amount float64) (*OrderResponse, error) {
+	if len(c.exchangeRules) > 0 {
+		rule, exists := c.exchangeRules[symbol]
+		if !exists {
+			return nil, fmt.Errorf("PlaceMarketOrder: symbol %s not found in exchange info", symbol)
+		}
+		if rule.Status != "TRADING" {
+			return nil, fmt.Errorf("PlaceMarketOrder: market is closed for %s (status: %s)", symbol, rule.Status)
+		}
+		if !rule.IsSpotTradingAllowed {
+			return nil, fmt.Errorf("PlaceMarketOrder: spot trading is not allowed for %s", symbol)
+		}
+		if side == Buy && !rule.QuoteOrderQtyMarketAllowed {
+			return nil, fmt.Errorf("PlaceMarketOrder: quoteOrderQty market buy is not allowed for %s", symbol)
+		}
+		if rule.MinNotional > 0 && amount < rule.MinNotional {
+			return nil, fmt.Errorf("PlaceMarketOrder: amount %.2f is below min notional %.2f for %s", amount, rule.MinNotional, symbol)
+		}
+	}
+
 	params := url.Values{}
 	params.Set("symbol", symbol)
 	params.Set("side", string(side))
@@ -283,6 +344,12 @@ func (c *Client) PlaceMarketOrder(symbol string, side OrderSide, amount float64)
 	c.sign(params)
 	body, err := c.doSignedRequest(http.MethodPost, "/api/v3/order", params, nil)
 	if err != nil {
+		if strings.Contains(err.Error(), "Market is closed") || strings.Contains(err.Error(), "-1013") {
+			if rule, ok := c.exchangeRules[symbol]; ok {
+				rule.Status = "BREAK"
+				c.exchangeRules[symbol] = rule
+			}
+		}
 		return nil, fmt.Errorf("PlaceMarketOrder %s %s: %w", side, symbol, err)
 	}
 	var resp OrderResponse

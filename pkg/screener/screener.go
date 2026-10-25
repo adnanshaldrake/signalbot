@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"adnan/binance-bot/pkg/app"
 	"adnan/binance-bot/pkg/backtest"
 	"adnan/binance-bot/pkg/config"
 	"adnan/binance-bot/pkg/store"
@@ -32,10 +33,9 @@ type Result struct {
 // Run fetches the top ScreenTopN USDT symbols by 24h volume, backfills their
 // candles into db, runs RunnerV2 on each, filters by the thresholds in cfg,
 // and returns a ranked watchlist (best PnL first).
-//
-// If screening produces zero results (bad market, API error, etc.) it falls
-// back to the provided fallback slice and logs a warning.
-func Run(cfg *config.BotConfig, db *store.DB, fallback []string) []string {
+// Only backtested, screened symbols are returned — it never falls back to
+// unscreened symbols.
+func Run(cfg *config.BotConfig, db *store.DB) []string {
 	slog.Info("screener: starting",
 		"top_n", cfg.ScreenTopN,
 		"min_win_rate_pct", cfg.ScreenMinWinRate,
@@ -46,8 +46,8 @@ func Run(cfg *config.BotConfig, db *store.DB, fallback []string) []string {
 	// --- Step 1: fetch top N symbols by 24h USDT volume ---
 	symbols, err := getTopSymbols(cfg.ScreenTopN)
 	if err != nil {
-		slog.Error("screener: failed to fetch symbols, using fallback", "error", err)
-		return fallback
+		slog.Error("screener: failed to fetch candidate symbols", "error", err)
+		return nil
 	}
 	slog.Info("screener: fetched candidate symbols", "count", len(symbols))
 
@@ -100,12 +100,36 @@ func Run(cfg *config.BotConfig, db *store.DB, fallback []string) []string {
 	}
 
 	if len(passed) == 0 {
-		slog.Warn("screener: no symbols passed filter — using fallback watchlist",
-			"screened", len(results),
-			"min_win_rate", cfg.ScreenMinWinRate,
-			"min_pnl", cfg.ScreenMinPnL,
-		)
-		return fallback
+		// Sort all screened results by PnL descending
+		sort.Slice(results, func(i, j int) bool {
+			return results[i].PnLUSDT > results[j].PnLUSDT
+		})
+
+		// If any symbol had positive PnL and at least 1 trade, select up to 3 best performers
+		var bestPositive []Result
+		for _, r := range results {
+			if r.Trades > 0 && r.PnLUSDT > 0 {
+				bestPositive = append(bestPositive, r)
+				if len(bestPositive) >= 3 {
+					break
+				}
+			}
+		}
+
+		if len(bestPositive) > 0 {
+			slog.Warn("screener: no symbols met strict thresholds; selecting top performers with positive PnL",
+				"count", len(bestPositive),
+				"screened", len(results),
+			)
+			passed = bestPositive
+		} else {
+			slog.Warn("screener: no symbols passed filter and none had positive PnL — returning empty watchlist",
+				"screened", len(results),
+				"min_win_rate", cfg.ScreenMinWinRate,
+				"min_pnl", cfg.ScreenMinPnL,
+			)
+			return nil
+		}
 	}
 
 	watchlist := make([]string, len(passed))
@@ -196,6 +220,18 @@ func getTopSymbols(n int) ([]string, error) {
 		return nil, fmt.Errorf("getTopSymbols: unmarshal: %w", err)
 	}
 
+	// Fetch active trading spot symbols to exclude BREAK/HALT/closed markets
+	validSymbols, err := app.GetSymbolList()
+	var validMap map[string]bool
+	if err == nil && len(validSymbols) > 0 {
+		validMap = make(map[string]bool, len(validSymbols))
+		for _, s := range validSymbols {
+			validMap[s] = true
+		}
+	} else if err != nil {
+		slog.Warn("screener: could not fetch active symbol list from exchangeInfo", "error", err)
+	}
+
 	type candidate struct {
 		symbol string
 		vol    float64
@@ -203,6 +239,9 @@ func getTopSymbols(n int) ([]string, error) {
 	var candidates []candidate
 
 	for _, t := range tickers {
+		if validMap != nil && !validMap[t.Symbol] {
+			continue
+		}
 		if !strings.HasSuffix(t.Symbol, "USDT") {
 			continue
 		}

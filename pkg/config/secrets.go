@@ -101,6 +101,7 @@ func loadDotEnv() {
 			}
 		}
 	}
+	_ = scanner.Err()
 }
 
 // Load reads environment variables and returns a populated BotConfig.
@@ -150,7 +151,7 @@ func Load() (*BotConfig, error) {
 		MaxWatchlistSize:    getIntEnv("MAX_WATCHLIST_SIZE", 50),
 		BackfillDays:        getIntEnv("BACKFILL_DAYS", 0),
 
-		ScreenOnStartup:  getBoolEnv("SCREEN_ON_STARTUP", false),
+		ScreenOnStartup:  getBoolEnv("SCREEN_ON_STARTUP", true),
 		ScreenTopN:       getIntEnv("SCREEN_TOP_N", 40),
 		ScreenMinWinRate: getFloat64Env("SCREEN_MIN_WIN_RATE", 35.0),
 		ScreenMinPnL:     getFloat64Env("SCREEN_MIN_PNL", 0.0),

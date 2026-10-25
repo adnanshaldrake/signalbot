@@ -208,6 +208,15 @@ func GetActiveSymbols(minVolUSDT float64, minTradeCount, maxSymbols int) ([]stri
 		return nil, fmt.Errorf("GetActiveSymbols: unmarshal: %w", err)
 	}
 
+	validSymbols, err := GetSymbolList()
+	var validMap map[string]bool
+	if err == nil && len(validSymbols) > 0 {
+		validMap = make(map[string]bool, len(validSymbols))
+		for _, s := range validSymbols {
+			validMap[s] = true
+		}
+	}
+
 	type candidate struct {
 		symbol  string
 		volUSDT float64
@@ -215,6 +224,9 @@ func GetActiveSymbols(minVolUSDT float64, minTradeCount, maxSymbols int) ([]stri
 	var candidates []candidate
 
 	for _, t := range tickers {
+		if validMap != nil && !validMap[t.Symbol] {
+			continue
+		}
 		// Only USDT quote pairs
 		if len(t.Symbol) < 5 || t.Symbol[len(t.Symbol)-4:] != "USDT" {
 			continue

@@ -143,3 +143,59 @@ func TestFormatQuantityEdgeCases(t *testing.T) {
 		}
 	}
 }
+
+func TestClosedMarketRejection(t *testing.T) {
+	client := &Client{
+		exchangeRules: map[string]SymbolFilter{
+			"BTCUSDT": {
+				Status:                     "TRADING",
+				IsSpotTradingAllowed:       true,
+				QuoteOrderQtyMarketAllowed: true,
+				StepSize:                   0.00001,
+				MinQty:                     0.0001,
+				Decimals:                   5,
+			},
+			"VANRYUSDT": {
+				Status:                     "BREAK",
+				IsSpotTradingAllowed:       true,
+				QuoteOrderQtyMarketAllowed: true,
+				StepSize:                   1.0,
+				MinQty:                     1.0,
+				Decimals:                   0,
+			},
+			"HALTUSDT": {
+				Status:                     "TRADING",
+				IsSpotTradingAllowed:       false,
+				QuoteOrderQtyMarketAllowed: true,
+				StepSize:                   1.0,
+				MinQty:                     1.0,
+				Decimals:                   0,
+			},
+		},
+	}
+
+	if !client.IsMarketOpen("BTCUSDT") {
+		t.Errorf("expected BTCUSDT to be market open")
+	}
+
+	if client.IsMarketOpen("VANRYUSDT") {
+		t.Errorf("expected VANRYUSDT to NOT be market open (status BREAK)")
+	}
+
+	if client.IsMarketOpen("HALTUSDT") {
+		t.Errorf("expected HALTUSDT to NOT be market open (IsSpotTradingAllowed false)")
+	}
+
+	if client.IsMarketOpen("UNKNOWNUSDT") {
+		t.Errorf("expected UNKNOWNUSDT to NOT be market open (not in exchange rules)")
+	}
+
+	_, err := client.PlaceMarketOrder("VANRYUSDT", Buy, 15.0)
+	if err == nil {
+		t.Fatalf("expected PlaceMarketOrder to fail for VANRYUSDT, got nil")
+	}
+	if !strings.Contains(err.Error(), "market is closed") {
+		t.Errorf("expected error to mention 'market is closed', got: %v", err)
+	}
+}
+
