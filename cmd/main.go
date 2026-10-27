@@ -406,13 +406,20 @@ func runCycle(
 			// Compute the actual net quantity available in your wallet
 			netQuantity := filledQty - baseAssetCommission
 
+			// Use real fill data (VWAP + cumulative quote) rather than the pre-order ticker price
+			entryPrice, quoteSpent, ok := resp.FillSummary()
+			if !ok {
+				slog.Warn("no fill data in order response — falling back to ticker price", "symbol", candidate.Symbol)
+				entryPrice, quoteSpent = candidate.CurrentPrice, decision.Quantity
+			}
+
 			// Record position using the accurate net quantity
 			pos := state.Position{
 				Symbol:     candidate.Symbol,
 				Side:       "BUY",
-				EntryPrice: candidate.CurrentPrice,
+				EntryPrice: entryPrice,
 				Quantity:   netQuantity, // Use net quantity after fees
-				QuoteSpent: decision.Quantity,
+				QuoteSpent: quoteSpent,
 				OrderID:    resp.OrderID,
 				OpenedAt:   time.Now(),
 			}
