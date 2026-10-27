@@ -510,6 +510,7 @@ func runBacktest(cfg *config.BotConfig, db *store.DB) {
 
 	runner := backtest.NewRunnerV2(db, cfg.MaxPositionUSDT).
 		WithRisk(cfg.StopLossPct, cfg.TakeProfitPct, 192).
+		WithFee(cfg.TakerFeePct).
 		WithFilters(backtest.FilterConfig{
 			MinRollingVolUSDT: cfg.MinVolume24hUSDT / 2, // relax volume
 			RugCandleBodyPct:  cfg.RugCandleBodyPct,
@@ -535,7 +536,8 @@ func runBacktest(cfg *config.BotConfig, db *store.DB) {
 // resolveWatchlist returns the watchlist to trade.
 // Priority order:
 //  1. Screener: dynamically backtests candidates from Binance, keeps profitable pairs (primary)
-//  2. User WATCHLIST: fallback if screener yields no symbols or if SCREEN_ON_STARTUP=false
+//  2. Auto-Discovery: scans active Binance USDT pairs by volume & trade count if AUTO_DISCOVER_SYMBOLS=true
+//  3. User WATCHLIST: fallback if screener/auto-discovery yield no symbols or if disabled
 func resolveWatchlist(cfg *config.BotConfig, db *store.DB) ([]string, error) {
 	if cfg.ScreenOnStartup {
 		slog.Info("running startup screener to discover active watchlist",
@@ -549,7 +551,24 @@ func resolveWatchlist(cfg *config.BotConfig, db *store.DB) ([]string, error) {
 			slog.Info("screener selected symbols for trading", "count", len(screened), "symbols", screened)
 			return screened, nil
 		}
-		slog.Warn("screener yielded 0 symbols — falling back to user watchlist")
+		slog.Warn("screener yielded 0 symbols — checking auto-discovery or fallback watchlist")
+	}
+
+	if cfg.AutoDiscoverSymbols {
+		slog.Info("auto-discovering active USDT pairs from Binance",
+			"min_volume_usdt", cfg.MinVolume24hUSDT,
+			"min_trade_count", cfg.MinTradeCount24h,
+			"max_symbols", cfg.MaxWatchlistSize,
+		)
+		discovered, err := app.GetActiveSymbols(cfg.MinVolume24hUSDT, cfg.MinTradeCount24h, cfg.MaxWatchlistSize)
+		if err != nil {
+			slog.Warn("auto-discovery failed — falling back to user watchlist", "error", err)
+		} else if len(discovered) > 0 {
+			slog.Info("auto-discovered active symbols", "count", len(discovered), "symbols", discovered)
+			return discovered, nil
+		} else {
+			slog.Warn("auto-discovery yielded 0 symbols — falling back to user watchlist")
+		}
 	}
 
 	if len(cfg.Watchlist) > 0 {
@@ -557,7 +576,7 @@ func resolveWatchlist(cfg *config.BotConfig, db *store.DB) ([]string, error) {
 		return cfg.Watchlist, nil
 	}
 
-	slog.Warn("no screened symbols available and no user watchlist configured")
+	slog.Warn("no screened symbols, no auto-discovered symbols, and no user watchlist configured")
 	return nil, nil
 }
 

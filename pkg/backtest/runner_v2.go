@@ -28,6 +28,7 @@ type RunnerV2 struct {
 	stopLossPct    float64
 	takeProfitPct  float64
 	maxHoldCandles int
+	feePct         float64 // per-side trading fee percentage (e.g. 0.1 for 0.1%)
 	filterCfg      *FilterConfig // reuses the same FilterConfig type from runner.go
 	useStrategy2   bool
 }
@@ -40,6 +41,7 @@ func NewRunnerV2(db *store.DB, positionUSDT float64) *RunnerV2 {
 		stopLossPct:    2.0,
 		takeProfitPct:  4.0,
 		maxHoldCandles: 192,
+		feePct:         0.0,
 		useStrategy2:   false,
 	}
 }
@@ -49,6 +51,12 @@ func (r *RunnerV2) WithRisk(stopLossPct, takeProfitPct float64, maxHoldCandles i
 	r.stopLossPct = stopLossPct
 	r.takeProfitPct = takeProfitPct
 	r.maxHoldCandles = maxHoldCandles
+	return r
+}
+
+// WithFee configures per-side trading fee percentage applied on entry and exit.
+func (r *RunnerV2) WithFee(feePct float64) *RunnerV2 {
+	r.feePct = feePct
 	return r
 }
 
@@ -117,14 +125,16 @@ func (r *RunnerV2) RunSymbolV2(symbol, interval string) (*Result, error) {
 	runningPnL := 0.0
 
 	closeTrade := func(exitPrice float64, exitTime time.Time, reason string) {
-		pnl := (exitPrice - openTrade.Price) / openTrade.Price * openTrade.QuoteValue
-		pnlPct := (exitPrice - openTrade.Price) / openTrade.Price * 100
+		netQty := (openTrade.QuoteValue / openTrade.Price) * (1 - r.feePct/100)
+		proceeds := netQty * exitPrice * (1 - r.feePct/100)
+		pnl := proceeds - openTrade.QuoteValue
+		pnlPct := (pnl / openTrade.QuoteValue) * 100
 		result.Trades = append(result.Trades, TradeRecord{
 			Symbol:     symbol,
 			Side:       "SELL",
 			Price:      exitPrice,
-			Qty:        openTrade.Qty,
-			QuoteValue: openTrade.QuoteValue + pnl,
+			Qty:        netQty,
+			QuoteValue: proceeds,
 			Time:       exitTime,
 			PnLUSDT:    pnl,
 			PnLPct:     pnlPct,
