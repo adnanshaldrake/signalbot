@@ -17,3 +17,14 @@
 4. **Testing & Verification**:
    - Always run `go test ./...` and ensure all tests pass cleanly before committing changes.
    - Add focused unit tests for new logic and metrics calculations.
+
+5. **GitHub Issue Format**:
+   - Keep issue descriptions simple, concise, and structured:
+     ```markdown
+     ### Summary
+     1-2 sentences stating the problem or missing capability.
+
+     ### Proposed Change
+     2-3 concise bullet points outlining the exact code changes or tests to add.
+     ```
+
