@@ -36,6 +36,7 @@ type BotConfig struct {
 	StopLossPct     float64 // STOP_LOSS_PCT — stop-loss percentage e.g. 2.0 = 2%; default 2.0
 	TakeProfitPct   float64 // TAKE_PROFIT_PCT — take-profit percentage; default 4.0
 	MaxDailyLossPct float64 // MAX_DAILY_LOSS_PCT — kill-switch threshold; default 5.0
+	TakerFeePct     float64 // TAKER_FEE_PCT — per-side trading fee % used in PnL; default 0.1
 
 	// Redis
 	RedisURL      string // REDIS_URL — default "localhost:6379"
@@ -126,6 +127,7 @@ func Load() (*BotConfig, error) {
 		StopLossPct:     getFloat64Env("STOP_LOSS_PCT", 2.0),
 		TakeProfitPct:   getFloat64Env("TAKE_PROFIT_PCT", 4.0),
 		MaxDailyLossPct: getFloat64Env("MAX_DAILY_LOSS_PCT", 5.0),
+		TakerFeePct:     getFloat64Env("TAKER_FEE_PCT", 0.1),
 
 		RedisURL:      getStringEnv("REDIS_URL", ""),
 		RedisUsername: getStringEnv("REDIS_USERNAME", ""),

@@ -252,7 +252,7 @@ func runCycle(
 			// Emergency exit on rug-pull candle
 			if filter.ShouldEmergencyExit(rugWindow, fCfg) {
 				slog.Warn("rug_pull_detected — emergency exit", "symbol", symbol)
-				pnl := risk.CalcPnL(pos, currentPrice)
+				pnl := risk.CalcPnL(pos, currentPrice, cfg.TakerFeePct)
 				pnlPct := pnl / pos.QuoteSpent * 100
 				if cfg.PaperTrading {
 					paperTrader.PlaceMarketOrder(ctx, symbol, binance.Sell, currentPrice, pos.QuoteSpent) //nolint:errcheck
@@ -271,7 +271,7 @@ func runCycle(
 				riskMgr.CheckTakeProfit(pos, currentPrice)
 
 			if shouldExit {
-				pnl := risk.CalcPnL(pos, currentPrice)
+				pnl := risk.CalcPnL(pos, currentPrice, cfg.TakerFeePct)
 				pnlPct := pnl / pos.QuoteSpent * 100
 
 				if cfg.PaperTrading {

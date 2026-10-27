@@ -11,6 +11,7 @@ import (
 
 	"adnan/binance-bot/pkg/binance"
 	"adnan/binance-bot/pkg/config"
+	"adnan/binance-bot/pkg/risk"
 	"adnan/binance-bot/pkg/state"
 )
 
@@ -43,11 +44,13 @@ func (t *Trader) PlaceMarketOrder(
 
 	switch side {
 	case binance.Buy:
+		// Buy fee is taken from the base asset, so the held quantity is net of the fee
+		netQty := baseQty * (1 - t.cfg.TakerFeePct/100)
 		pos := state.Position{
 			Symbol:     symbol,
 			Side:       "BUY",
 			EntryPrice: currentPrice,
-			Quantity:   baseQty,
+			Quantity:   netQty,
 			QuoteSpent: quoteQty,
 			OrderID:    now.UnixNano(), // fake order ID
 			OpenedAt:   now,
@@ -71,7 +74,7 @@ func (t *Trader) PlaceMarketOrder(
 			return nil, fmt.Errorf("paper sell: no open position for %s", symbol)
 		}
 
-		pnl := (currentPrice - pos.EntryPrice) / pos.EntryPrice * pos.QuoteSpent
+		pnl := risk.CalcPnL(pos, currentPrice, t.cfg.TakerFeePct)
 		if err := t.stateMgr.ClosePosition(ctx, symbol, pnl); err != nil {
 			return nil, fmt.Errorf("paper sell: close position: %w", err)
 		}

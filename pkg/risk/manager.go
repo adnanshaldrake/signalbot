@@ -110,10 +110,13 @@ func (m *Manager) CheckTakeProfit(pos *state.Position, currentPrice float64) boo
 	return hit
 }
 
-// CalcPnL calculates realised P&L in USDT when closing a BUY position.
-func CalcPnL(pos *state.Position, exitPrice float64) float64 {
-	// P&L = (exit - entry) / entry * quoteSpent
-	return (exitPrice - pos.EntryPrice) / pos.EntryPrice * pos.QuoteSpent
+// CalcPnL calculates realised net P&L in USDT when closing a BUY position.
+// proceeds = netQuantity * exitPrice, minus the estimated sell fee (sellFeePct, e.g. 0.1 = 0.1%).
+// pos.Quantity is already net of any buy-side base-asset commission, and
+// pos.QuoteSpent is the total USDT paid on entry (buy fee in USDT is included in it).
+func CalcPnL(pos *state.Position, exitPrice, sellFeePct float64) float64 {
+	proceeds := pos.Quantity * exitPrice * (1 - sellFeePct/100)
+	return proceeds - pos.QuoteSpent
 }
 
 // dailyLossKillSwitch checks if daily loss exceeds the configured threshold.
