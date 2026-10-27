@@ -38,13 +38,15 @@ type Result struct {
 func Run(cfg *config.BotConfig, db *store.DB) []string {
 	slog.Info("screener: starting",
 		"top_n", cfg.ScreenTopN,
+		"min_volume_usdt", cfg.ScreenMinVolumeUSDT,
+		"max_volume_usdt", cfg.ScreenMaxVolumeUSDT,
 		"min_win_rate_pct", cfg.ScreenMinWinRate,
 		"min_pnl_usdt", cfg.ScreenMinPnL,
 		"min_trades", cfg.ScreenMinTrades,
 	)
 
-	// --- Step 1: fetch top N symbols by 24h USDT volume ---
-	symbols, err := getTopSymbols(cfg.ScreenTopN)
+	// --- Step 1: fetch candidate symbols by 24h USDT volume range ---
+	symbols, err := getTopSymbols(cfg.ScreenTopN, cfg.ScreenMinVolumeUSDT, cfg.ScreenMaxVolumeUSDT)
 	if err != nil {
 		slog.Error("screener: failed to fetch candidate symbols", "error", err)
 		return nil
@@ -57,6 +59,7 @@ func Run(cfg *config.BotConfig, db *store.DB) []string {
 	// --- Step 3: run backtest on each ---
 	runner := backtest.NewRunnerV2(db, cfg.MaxPositionUSDT).
 		WithRisk(cfg.StopLossPct, cfg.TakeProfitPct, 192).
+		WithFee(cfg.TakerFeePct).
 		WithFilters(backtest.FilterConfig{
 			MinRollingVolUSDT: cfg.MinVolume24hUSDT / 4, // relaxed for screening
 			RugCandleBodyPct:  cfg.RugCandleBodyPct,
@@ -199,10 +202,11 @@ func backfillSymbols(symbols []string, interval string, db *store.DB) {
 	slog.Info("screener: backfill complete", "symbols", ok, "total", len(symbols))
 }
 
-// getTopSymbols calls the Binance 24hr ticker and returns the top n USDT spot
-// pairs sorted by quoteVolume descending. Leveraged tokens (UP/DOWN/BULL/BEAR)
-// are excluded. Symbols with < $1M 24h volume are skipped.
-func getTopSymbols(n int) ([]string, error) {
+// getTopSymbols calls the Binance 24hr ticker and returns up to n USDT spot
+// pairs within the [minVol, maxVol] quoteVolume range, sorted by quoteVolume descending.
+// If n <= 0, all matching symbols are returned.
+// Leveraged tokens (UP/DOWN/BULL/BEAR) and inactive markets are excluded.
+func getTopSymbols(n int, minVol, maxVol float64) ([]string, error) {
 	type ticker struct {
 		Symbol      string `json:"symbol"`
 		QuoteVolume string `json:"quoteVolume"`
@@ -251,7 +255,10 @@ func getTopSymbols(n int) ([]string, error) {
 			continue
 		}
 		vol, _ := strconv.ParseFloat(t.QuoteVolume, 64)
-		if vol < 1_000_000 {
+		if minVol > 0 && vol < minVol {
+			continue
+		}
+		if maxVol > 0 && vol > maxVol {
 			continue
 		}
 		candidates = append(candidates, candidate{symbol: t.Symbol, vol: vol})

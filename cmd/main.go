@@ -510,6 +510,7 @@ func runBacktest(cfg *config.BotConfig, db *store.DB) {
 
 	runner := backtest.NewRunnerV2(db, cfg.MaxPositionUSDT).
 		WithRisk(cfg.StopLossPct, cfg.TakeProfitPct, 192).
+		WithFee(cfg.TakerFeePct).
 		WithFilters(backtest.FilterConfig{
 			MinRollingVolUSDT: cfg.MinVolume24hUSDT / 2, // relax volume
 			RugCandleBodyPct:  cfg.RugCandleBodyPct,

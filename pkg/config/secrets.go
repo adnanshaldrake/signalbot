@@ -70,11 +70,13 @@ type BotConfig struct {
 	BackfillDays int // BACKFILL_DAYS — if >0, fetches multiple batches of candles to go back this many days. default 0 (single batch).
 
 	// Startup symbol screener
-	ScreenOnStartup  bool    // SCREEN_ON_STARTUP — if true, auto-screen symbols on startup; default false
-	ScreenTopN       int     // SCREEN_TOP_N — top-N USDT symbols by volume to screen; default 40
-	ScreenMinWinRate float64 // SCREEN_MIN_WIN_RATE — minimum win rate % to keep a symbol; default 35.0
-	ScreenMinPnL     float64 // SCREEN_MIN_PNL — minimum total PnL USDT to keep a symbol; default 0.0
-	ScreenMinTrades  int     // SCREEN_MIN_TRADES — minimum backtest trades to keep a symbol; default 3
+	ScreenOnStartup     bool    // SCREEN_ON_STARTUP — if true, auto-screen symbols on startup; default false
+	ScreenTopN          int     // SCREEN_TOP_N — top-N USDT symbols to screen (0 = all matching); default 40
+	ScreenMinVolumeUSDT float64 // SCREEN_MIN_VOLUME_USDT — minimum 24h volume for screener candidates; default 200000
+	ScreenMaxVolumeUSDT float64 // SCREEN_MAX_VOLUME_USDT — maximum 24h volume for screener candidates (0 = unconstrained); default 0
+	ScreenMinWinRate    float64 // SCREEN_MIN_WIN_RATE — minimum win rate % to keep a symbol; default 35.0
+	ScreenMinPnL        float64 // SCREEN_MIN_PNL — minimum total PnL USDT to keep a symbol; default 0.0
+	ScreenMinTrades     int     // SCREEN_MIN_TRADES — minimum backtest trades to keep a symbol; default 3
 }
 
 func loadDotEnv() {
@@ -153,11 +155,13 @@ func Load() (*BotConfig, error) {
 		MaxWatchlistSize:    getIntEnv("MAX_WATCHLIST_SIZE", 50),
 		BackfillDays:        getIntEnv("BACKFILL_DAYS", 0),
 
-		ScreenOnStartup:  getBoolEnv("SCREEN_ON_STARTUP", true),
-		ScreenTopN:       getIntEnv("SCREEN_TOP_N", 40),
-		ScreenMinWinRate: getFloat64Env("SCREEN_MIN_WIN_RATE", 35.0),
-		ScreenMinPnL:     getFloat64Env("SCREEN_MIN_PNL", 0.0),
-		ScreenMinTrades:  getIntEnv("SCREEN_MIN_TRADES", 3),
+		ScreenOnStartup:     getBoolEnv("SCREEN_ON_STARTUP", true),
+		ScreenTopN:          getIntEnv("SCREEN_TOP_N", 40),
+		ScreenMinVolumeUSDT: getFloat64Env("SCREEN_MIN_VOLUME_USDT", 200_000),
+		ScreenMaxVolumeUSDT: getFloat64Env("SCREEN_MAX_VOLUME_USDT", 0),
+		ScreenMinWinRate:    getFloat64Env("SCREEN_MIN_WIN_RATE", 35.0),
+		ScreenMinPnL:        getFloat64Env("SCREEN_MIN_PNL", 0.0),
+		ScreenMinTrades:     getIntEnv("SCREEN_MIN_TRADES", 3),
 	}
 
 	// Parse watchlist
