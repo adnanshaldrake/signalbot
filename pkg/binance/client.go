@@ -76,6 +76,36 @@ type Fill struct {
 	TradeId         int    `json:"tradeId"`
 }
 
+// FillSummary returns the real volume-weighted average fill price and the total
+// quote amount (USDT) spent, taken from the order response rather than the
+// pre-order ticker price. ok is false if the response has no usable fill data.
+func (r *OrderResponse) FillSummary() (avgPrice, quoteSpent float64, ok bool) {
+	quoteSpent, _ = strconv.ParseFloat(r.CummulativeQuoteQty, 64)
+	executedQty, _ := strconv.ParseFloat(r.ExecutedQty, 64)
+
+	// Primary: VWAP from fills
+	var cost, qty float64
+	for _, f := range r.Fills {
+		p, _ := strconv.ParseFloat(f.Price, 64)
+		q, _ := strconv.ParseFloat(f.Quantity, 64)
+		cost += p * q
+		qty += q
+	}
+	if qty > 0 {
+		avgPrice = cost / qty
+		if quoteSpent <= 0 {
+			quoteSpent = cost
+		}
+		return avgPrice, quoteSpent, true
+	}
+
+	// Fallback: cumulative quote / executed qty
+	if executedQty > 0 && quoteSpent > 0 {
+		return quoteSpent / executedQty, quoteSpent, true
+	}
+	return 0, 0, false
+}
+
 // Balance holds the free and locked amounts of a single asset.
 type Balance struct {
 	Asset  string  `json:"asset"`
