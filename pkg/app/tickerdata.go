@@ -18,13 +18,12 @@ import (
 )
 
 // TickerCache is the interface for storing and retrieving raw candlestick JSON.
-// There are two implementations: InMemoryCache (no dependencies) and RedisCache.
 type TickerCache interface {
 	Set(symbol, data string) error
 	Get(symbol string) (string, error)
 }
 
-// --- In-memory cache (default, no Redis required) ---
+// --- In-memory cache ---
 
 // InMemoryCache stores ticker JSON in a plain Go map with a read/write mutex.
 type InMemoryCache struct {
@@ -55,19 +54,13 @@ func (c *InMemoryCache) Get(symbol string) (string, error) {
 }
 
 // --- Module-level cache instance ---
-// Initialised once via InitCache; defaults to in-memory if Redis is not configured.
+// Initialised once via InitCache.
 var globalCache TickerCache
 
-// InitCache sets up the ticker cache based on configuration.
+// InitCache sets up the in-memory ticker cache.
 // Call this once at startup before using LoadTickerData / GetTimeSeries.
-func InitCache(cfg *config.BotConfig) {
-	if cfg.RedisURL != "" && cfg.RedisURL != "localhost:6379" {
-		// Redis URL explicitly configured — use Redis
-		globalCache = newRedisCache(cfg)
-	} else {
-		// No Redis configured (or default placeholder) — use in-memory
-		globalCache = NewInMemoryCache()
-	}
+func InitCache(_ *config.BotConfig) {
+	globalCache = NewInMemoryCache()
 }
 
 // SetCache allows injecting a custom cache (useful for testing).
@@ -107,7 +100,7 @@ func GetSymbolList() ([]string, error) {
 }
 
 // LoadTickerData fetches candlestick data for each symbol concurrently and stores
-// it in the configured cache (in-memory or Redis).
+// it in the in-memory cache.
 func LoadTickerData(symbolList []string, limit int) error {
 	return LoadTickerDataWithInterval(symbolList, limit, "15m")
 }

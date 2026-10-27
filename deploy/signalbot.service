@@ -22,7 +22,7 @@
 
 [Unit]
 Description=Signalbot — Binance Altcoin Trading Bot
-After=network-online.target redis.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]

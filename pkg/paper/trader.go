@@ -1,6 +1,6 @@
 // Package paper provides a simulated trading executor that mirrors the real Binance
 // client interface but writes no real orders. Virtual positions and balances are
-// tracked in Redis so paper trading state also survives restarts.
+// tracked in the state manager so paper trading state also survives restarts.
 package paper
 
 import (

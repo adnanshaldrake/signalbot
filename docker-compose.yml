@@ -1,43 +1,17 @@
 version: "3.9"
 
 services:
-  redis:
-    image: redis:7-alpine
-    container_name: signalbot-redis
-    restart: unless-stopped
-    # Persist Redis data to disk so positions survive container restarts
-    command: redis-server --appendonly yes
-    volumes:
-      - redis_data:/data
-    ports:
-      - "6379:6379"  # remove this line if you don't need local Redis access
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
   signalbot:
     build: .
     container_name: signalbot
     restart: unless-stopped
-    depends_on:
-      redis:
-        condition: service_healthy
-    # All config comes from environment variables (set in .env or override here)
     env_file:
       - .env
-    environment:
-      # Override Redis URL to use the Docker service name
-      REDIS_URL: redis:6379
     volumes:
-      # Persist SQLite historical data outside the container
+      # Persist SQLite data outside the container
       - ./data:/app/data
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  redis_data:

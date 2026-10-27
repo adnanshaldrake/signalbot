@@ -38,10 +38,6 @@ type BotConfig struct {
 	MaxDailyLossPct float64 // MAX_DAILY_LOSS_PCT — kill-switch threshold; default 5.0
 	TakerFeePct     float64 // TAKER_FEE_PCT — per-side trading fee % used in PnL; default 0.1
 
-	// Redis
-	RedisURL      string // REDIS_URL — default "localhost:6379"
-	RedisUsername string // REDIS_USERNAME — default ""
-	RedisPassword string // REDIS_PASSWORD — default ""
 
 	// SQLite (backtesting / historical data)
 	SQLiteDBPath string // SQLITE_DB_PATH — default "data/signalbot.db"
@@ -131,9 +127,6 @@ func Load() (*BotConfig, error) {
 		MaxDailyLossPct: getFloat64Env("MAX_DAILY_LOSS_PCT", 5.0),
 		TakerFeePct:     getFloat64Env("TAKER_FEE_PCT", 0.1),
 
-		RedisURL:      getStringEnv("REDIS_URL", ""),
-		RedisUsername: getStringEnv("REDIS_USERNAME", ""),
-		RedisPassword: getStringEnv("REDIS_PASSWORD", ""),
 
 		SQLiteDBPath: getStringEnv("SQLITE_DB_PATH", "data/signalbot.db"),
 

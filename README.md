@@ -31,8 +31,7 @@ docker compose up -d
 ## Deploy (Railway / Fly.io / any VPS)
 
 1. Set your `.env` vars as environment variables on the platform
-2. Point Redis at your Redis service (`REDIS_URL`)
-3. Push — the Dockerfile handles the rest
+2. Push — the Dockerfile handles the rest (state persisted in SQLite at `data/signalbot.db`)
 
 ## Trading Modes
 
