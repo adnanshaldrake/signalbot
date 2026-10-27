@@ -18,6 +18,7 @@ import (
 	"adnan/binance-bot/pkg/binance"
 	"adnan/binance-bot/pkg/config"
 	"adnan/binance-bot/pkg/filter"
+	"adnan/binance-bot/pkg/metrics"
 	"adnan/binance-bot/pkg/notify"
 	"adnan/binance-bot/pkg/paper"
 	"adnan/binance-bot/pkg/risk"
@@ -35,7 +36,28 @@ func main() {
 	// --- CLI flags ---
 	backfillFlag := flag.Bool("backfill", false, "Download and store historical candles, then exit")
 	backtestFlag := flag.Bool("backtest", false, "Run backtest over stored candles, then exit")
+	metricsFlag := flag.Bool("metrics", false, "Display trade performance metrics and exit")
 	flag.Parse()
+
+	// --- Quick metrics inspection mode ---
+	if *metricsFlag {
+		dbPath := "data/signalbot.db"
+		if cfg, err := config.Load(); err == nil && cfg.SQLiteDBPath != "" {
+			dbPath = cfg.SQLiteDBPath
+		}
+		db, err := store.Open(dbPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to open database at %s: %v\n", dbPath, err)
+			os.Exit(1)
+		}
+		defer db.Close()
+
+		if err := metrics.PrintDashboard(os.Stdout, db); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to print metrics: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// --- Structured JSON logging ---
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -149,12 +171,12 @@ func runBot(cfg *config.BotConfig, db *store.DB) {
 	slog.Info("bot loop started", "interval", cfg.LoopInterval)
 
 	// Run immediately on startup, then on every tick
-	runCycle(ctx, cfg, watchlist, stateMgr, riskMgr, notifier, paperTrader, binanceClient)
+	runCycle(ctx, cfg, watchlist, stateMgr, riskMgr, notifier, paperTrader, binanceClient, db)
 
 	for {
 		select {
 		case <-ticker.C:
-			runCycle(ctx, cfg, watchlist, stateMgr, riskMgr, notifier, paperTrader, binanceClient)
+			runCycle(ctx, cfg, watchlist, stateMgr, riskMgr, notifier, paperTrader, binanceClient, db)
 		case <-ctx.Done():
 			slog.Info("shutdown signal received, stopping bot")
 			return
@@ -174,6 +196,7 @@ func runCycle(
 	notifier *notify.Notifier,
 	paperTrader *paper.Trader,
 	binanceClient *binance.Client,
+	db *store.DB,
 ) {
 	if len(watchlist) == 0 {
 		slog.Info("cycle start — watchlist is empty, skipping cycle", "time", time.Now().UTC().Format(time.RFC3339))
@@ -255,11 +278,12 @@ func runCycle(
 				pnl := risk.CalcPnL(pos, currentPrice, cfg.TakerFeePct)
 				pnlPct := pnl / pos.QuoteSpent * 100
 				if cfg.PaperTrading {
-					paperTrader.PlaceMarketOrder(ctx, symbol, binance.Sell, currentPrice, pos.QuoteSpent) //nolint:errcheck
+					paperTrader.PlaceMarketOrderWithReason(ctx, symbol, binance.Sell, currentPrice, pos.QuoteSpent, "EMERGENCY_RUG") //nolint:errcheck
 				} else {
 					binanceClient.PlaceMarketOrder(symbol, binance.Sell, pos.Quantity) //nolint:errcheck
 					_ = stateMgr.ClosePositionWithDetails(ctx, symbol, currentPrice, pnl, "EMERGENCY_RUG")
 				}
+				metrics.LogTradeClosed(db, symbol, pnl)
 				notifier.TradeClosed(symbol, tradingMode(cfg), pos.EntryPrice, currentPrice, pnl, pnlPct)
 				continue
 			}
@@ -274,8 +298,13 @@ func runCycle(
 				pnl := risk.CalcPnL(pos, currentPrice, cfg.TakerFeePct)
 				pnlPct := pnl / pos.QuoteSpent * 100
 
+				exitReason := "STOP_LOSS"
+				if riskMgr.CheckTakeProfit(pos, currentPrice) {
+					exitReason = "TAKE_PROFIT"
+				}
+
 				if cfg.PaperTrading {
-					if _, err := paperTrader.PlaceMarketOrder(ctx, symbol, binance.Sell, currentPrice, pos.QuoteSpent); err != nil {
+					if _, err := paperTrader.PlaceMarketOrderWithReason(ctx, symbol, binance.Sell, currentPrice, pos.QuoteSpent, exitReason); err != nil {
 						slog.Error("paper sell failed", "symbol", symbol, "error", err)
 						continue
 					}
@@ -285,14 +314,11 @@ func runCycle(
 						notifier.Error("PlaceMarketOrder SELL", err.Error())
 						continue
 					}
-					exitReason := "STOP_LOSS"
-					if riskMgr.CheckTakeProfit(pos, currentPrice) {
-						exitReason = "TAKE_PROFIT"
-					}
 					if err := stateMgr.ClosePositionWithDetails(ctx, symbol, currentPrice, pnl, exitReason); err != nil {
 						slog.Error("ClosePosition failed", "symbol", symbol, "error", err)
 					}
 				}
+				metrics.LogTradeClosed(db, symbol, pnl)
 				notifier.TradeClosed(symbol, tradingMode(cfg), pos.EntryPrice, currentPrice, pnl, pnlPct)
 			}
 			continue // don't check entry if we already have a position

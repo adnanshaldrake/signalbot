@@ -28,7 +28,7 @@ func NewTrader(cfg *config.BotConfig, stateMgr state.StateManager) *Trader {
 	return &Trader{cfg: cfg, stateMgr: stateMgr}
 }
 
-// PlaceMarketOrder simulates a market buy or sell and records the position in Redis.
+// PlaceMarketOrder simulates a market buy or sell and records the position in state.
 // It returns a fake OrderResponse consistent with the real Binance client's return type.
 func (t *Trader) PlaceMarketOrder(
 	ctx context.Context,
@@ -36,6 +36,18 @@ func (t *Trader) PlaceMarketOrder(
 	side binance.OrderSide,
 	currentPrice float64,
 	quoteQty float64,
+) (*binance.OrderResponse, error) {
+	return t.PlaceMarketOrderWithReason(ctx, symbol, side, currentPrice, quoteQty, "")
+}
+
+// PlaceMarketOrderWithReason simulates market buy/sell while recording the exit reason on sells.
+func (t *Trader) PlaceMarketOrderWithReason(
+	ctx context.Context,
+	symbol string,
+	side binance.OrderSide,
+	currentPrice float64,
+	quoteQty float64,
+	exitReason string,
 ) (*binance.OrderResponse, error) {
 	now := time.Now()
 
@@ -75,7 +87,7 @@ func (t *Trader) PlaceMarketOrder(
 		}
 
 		pnl := risk.CalcPnL(pos, currentPrice, t.cfg.TakerFeePct)
-		if err := t.stateMgr.ClosePositionWithDetails(ctx, symbol, currentPrice, pnl, ""); err != nil {
+		if err := t.stateMgr.ClosePositionWithDetails(ctx, symbol, currentPrice, pnl, exitReason); err != nil {
 			return nil, fmt.Errorf("paper sell: close position: %w", err)
 		}
 		slog.Info("[PAPER] SELL executed",
