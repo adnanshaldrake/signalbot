@@ -1,14 +1,10 @@
-// Package state provides an in-memory state manager for local/no-Redis runs.
-// It implements the same interface as the Redis Manager so the rest of the
-// codebase doesn't need to know which backend is in use.
+// Package state provides state managers for trading positions and P&L.
 package state
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"sync"
-	"time"
 
 	"adnan/binance-bot/pkg/store"
 )
@@ -98,10 +94,10 @@ func (m *MemoryManager) GetDailyPnL(_ context.Context) (float64, error) {
 }
 
 // --- StateManager interface ---
-// Both Manager (Redis), SQLiteManager, and MemoryManager implement this interface.
+// SQLiteManager and MemoryManager implement this interface.
 // The rest of the app uses this interface so the backend is swappable.
 
-// StateManager is the interface satisfied by Redis, SQLite, and in-memory managers.
+// StateManager is the interface satisfied by SQLite and in-memory managers.
 type StateManager interface {
 	Close() error
 	OpenPosition(ctx context.Context, pos Position) error
@@ -114,27 +110,13 @@ type StateManager interface {
 	GetDailyPnL(ctx context.Context) (float64, error)
 }
 
-// NewStateManager returns a Redis-backed manager if REDIS_URL is set,
-// otherwise falls back to a persistent SQLite manager if db is provided,
-// or an in-memory manager if db is nil.
-func NewStateManager(redisURL, redisUser, redisPass string, db *store.DB) (StateManager, error) {
-	if redisURL == "" {
-		if db != nil {
-			slog.Info("REDIS_URL not set — using persistent SQLite state manager (positions survive restart)")
-			return NewSQLiteManager(db), nil
-		}
-		slog.Info("REDIS_URL not set and no DB provided — using in-memory state (positions lost on restart)")
-		return NewMemoryManager(), nil
+// NewStateManager returns a persistent SQLite manager if db is provided,
+// otherwise falls back to an in-memory manager if db is nil.
+func NewStateManager(db *store.DB) (StateManager, error) {
+	if db != nil {
+		slog.Info("using persistent SQLite state manager (positions survive restart)")
+		return NewSQLiteManager(db), nil
 	}
-	// Redis URL configured — connect and verify
-	redisMgr, err := NewManager2(redisURL, redisUser, redisPass)
-	if err != nil {
-		return nil, fmt.Errorf("redis connection failed: %w", err)
-	}
-	slog.Info("connected to Redis", "url", redisURL)
-	return redisMgr, nil
+	slog.Info("no DB provided — using in-memory state (positions lost on restart)")
+	return NewMemoryManager(), nil
 }
-
-// Position (re-exported for use through the interface — defined in positions.go)
-// Dummy usage to avoid "declared but not used" — the real struct is in positions.go
-var _ = Position{OpenedAt: time.Time{}}

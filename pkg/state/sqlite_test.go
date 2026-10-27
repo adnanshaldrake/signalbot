@@ -121,8 +121,8 @@ func TestNewStateManager_Selection(t *testing.T) {
 	}
 	defer db.Close()
 
-	// When REDIS_URL is empty and db is provided, must return SQLiteManager
-	mgr, err := NewStateManager("", "", "", db)
+	// When db is provided, must return SQLiteManager
+	mgr, err := NewStateManager(db)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -130,8 +130,8 @@ func TestNewStateManager_Selection(t *testing.T) {
 		t.Errorf("expected *SQLiteManager, got %T", mgr)
 	}
 
-	// When REDIS_URL is empty and db is nil, falls back to MemoryManager
-	memMgr, err := NewStateManager("", "", "", nil)
+	// When db is nil, falls back to MemoryManager
+	memMgr, err := NewStateManager(nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
