@@ -75,7 +75,7 @@ func (t *Trader) PlaceMarketOrder(
 		}
 
 		pnl := risk.CalcPnL(pos, currentPrice, t.cfg.TakerFeePct)
-		if err := t.stateMgr.ClosePosition(ctx, symbol, pnl); err != nil {
+		if err := t.stateMgr.ClosePositionWithDetails(ctx, symbol, currentPrice, pnl, ""); err != nil {
 			return nil, fmt.Errorf("paper sell: close position: %w", err)
 		}
 		slog.Info("[PAPER] SELL executed",

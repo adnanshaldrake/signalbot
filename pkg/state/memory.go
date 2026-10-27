@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"adnan/binance-bot/pkg/store"
 )
 
 // MemoryManager implements position tracking entirely in-process.
@@ -39,6 +41,11 @@ func (m *MemoryManager) OpenPosition(_ context.Context, pos Position) error {
 
 // ClosePosition removes the position and accumulates P&L.
 func (m *MemoryManager) ClosePosition(_ context.Context, symbol string, realisedPnL float64) error {
+	return m.ClosePositionWithDetails(context.Background(), symbol, 0, realisedPnL, "")
+}
+
+// ClosePositionWithDetails removes the position and accumulates P&L.
+func (m *MemoryManager) ClosePositionWithDetails(_ context.Context, symbol string, _ float64, realisedPnL float64, _ string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.positions, symbol)
@@ -91,14 +98,15 @@ func (m *MemoryManager) GetDailyPnL(_ context.Context) (float64, error) {
 }
 
 // --- StateManager interface ---
-// Both Manager (Redis) and MemoryManager implement this interface.
+// Both Manager (Redis), SQLiteManager, and MemoryManager implement this interface.
 // The rest of the app uses this interface so the backend is swappable.
 
-// StateManager is the interface satisfied by both Redis and in-memory managers.
+// StateManager is the interface satisfied by Redis, SQLite, and in-memory managers.
 type StateManager interface {
 	Close() error
 	OpenPosition(ctx context.Context, pos Position) error
 	ClosePosition(ctx context.Context, symbol string, realisedPnL float64) error
+	ClosePositionWithDetails(ctx context.Context, symbol string, exitPrice float64, realisedPnL float64, exitReason string) error
 	GetPosition(ctx context.Context, symbol string) (*Position, error)
 	GetAllPositions(ctx context.Context) ([]Position, error)
 	CountOpenPositions(ctx context.Context) (int, error)
@@ -107,10 +115,15 @@ type StateManager interface {
 }
 
 // NewStateManager returns a Redis-backed manager if REDIS_URL is set,
-// otherwise falls back to an in-memory manager.
-func NewStateManager(redisURL, redisUser, redisPass string) (StateManager, error) {
+// otherwise falls back to a persistent SQLite manager if db is provided,
+// or an in-memory manager if db is nil.
+func NewStateManager(redisURL, redisUser, redisPass string, db *store.DB) (StateManager, error) {
 	if redisURL == "" {
-		slog.Info("REDIS_URL not set — using in-memory state (positions lost on restart)")
+		if db != nil {
+			slog.Info("REDIS_URL not set — using persistent SQLite state manager (positions survive restart)")
+			return NewSQLiteManager(db), nil
+		}
+		slog.Info("REDIS_URL not set and no DB provided — using in-memory state (positions lost on restart)")
 		return NewMemoryManager(), nil
 	}
 	// Redis URL configured — connect and verify

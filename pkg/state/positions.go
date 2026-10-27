@@ -89,6 +89,11 @@ func (m *Manager) ClosePosition(ctx context.Context, symbol string, realisedPnL 
 	return err
 }
 
+// ClosePositionWithDetails removes the position for a symbol and records the realised P&L.
+func (m *Manager) ClosePositionWithDetails(ctx context.Context, symbol string, _ float64, realisedPnL float64, _ string) error {
+	return m.ClosePosition(ctx, symbol, realisedPnL)
+}
+
 // GetPosition returns the open position for a symbol, or nil if none exists.
 func (m *Manager) GetPosition(ctx context.Context, symbol string) (*Position, error) {
 	val, err := m.rdb.HGet(ctx, positionsKey, symbol).Result()

@@ -26,6 +26,34 @@ CREATE TABLE IF NOT EXISTS candles (
     UNIQUE(symbol, interval, open_time)
 );
 CREATE INDEX IF NOT EXISTS idx_candles_lookup ON candles(symbol, interval, open_time);
+
+CREATE TABLE IF NOT EXISTS positions (
+    symbol      TEXT    PRIMARY KEY,
+    side        TEXT    NOT NULL,
+    entry_price REAL    NOT NULL,
+    quantity    REAL    NOT NULL,
+    quote_spent REAL    NOT NULL,
+    order_id    INTEGER NOT NULL,
+    opened_at   INTEGER NOT NULL  -- Unix milliseconds
+);
+
+CREATE TABLE IF NOT EXISTS trades (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id    INTEGER NOT NULL,
+    symbol      TEXT    NOT NULL,
+    side        TEXT    NOT NULL,
+    entry_price REAL    NOT NULL,
+    exit_price  REAL    NOT NULL,
+    quantity    REAL    NOT NULL,
+    quote_spent REAL    NOT NULL,
+    pnl         REAL    NOT NULL,
+    pnl_pct     REAL    NOT NULL,
+    exit_reason TEXT    NOT NULL,  -- "TAKE_PROFIT", "STOP_LOSS", "EMERGENCY_RUG", "MANUAL"
+    opened_at   INTEGER NOT NULL,  -- Unix milliseconds
+    closed_at   INTEGER NOT NULL   -- Unix milliseconds
+);
+CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
+CREATE INDEX IF NOT EXISTS idx_trades_closed_at ON trades(closed_at);
 `
 
 // Candle represents a single OHLCV bar.
@@ -38,6 +66,34 @@ type Candle struct {
 	Low      float64
 	Close    float64
 	Volume   float64
+}
+
+// StoredPosition represents an active open position stored in SQLite.
+type StoredPosition struct {
+	Symbol     string    `json:"symbol"`
+	Side       string    `json:"side"`
+	EntryPrice float64   `json:"entry_price"`
+	Quantity   float64   `json:"quantity"`
+	QuoteSpent float64   `json:"quote_spent"`
+	OrderID    int64     `json:"order_id"`
+	OpenedAt   time.Time `json:"opened_at"`
+}
+
+// Trade represents a completed round-trip trade (entry to exit).
+type Trade struct {
+	ID         int64     `json:"id"`
+	OrderID    int64     `json:"order_id"`
+	Symbol     string    `json:"symbol"`
+	Side       string    `json:"side"`
+	EntryPrice float64   `json:"entry_price"`
+	ExitPrice  float64   `json:"exit_price"`
+	Quantity   float64   `json:"quantity"`
+	QuoteSpent float64   `json:"quote_spent"`
+	PnL        float64   `json:"pnl"`
+	PnLPct     float64   `json:"pnl_pct"`
+	ExitReason string    `json:"exit_reason"`
+	OpenedAt   time.Time `json:"opened_at"`
+	ClosedAt   time.Time `json:"closed_at"`
 }
 
 // DB wraps a SQLite database connection for candle storage.
@@ -59,7 +115,7 @@ func Open(dbPath string) (*DB, error) {
 
 	// Tune for write throughput (backtesting inserts many rows)
 	conn.SetMaxOpenConns(1) // SQLite does not support concurrent writers
-	if _, err := conn.Exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`); err != nil {
+	if _, err := conn.Exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;`); err != nil {
 		return nil, fmt.Errorf("store: sqlite pragma: %w", err)
 	}
 
@@ -185,3 +241,161 @@ func (db *DB) ListSymbols() ([]string, error) {
 	}
 	return symbols, rows.Err()
 }
+
+// UpsertPosition inserts or replaces an active open position.
+func (db *DB) UpsertPosition(pos StoredPosition) error {
+	query := `
+		INSERT OR REPLACE INTO positions
+			(symbol, side, entry_price, quantity, quote_spent, order_id, opened_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`
+	_, err := db.conn.Exec(query,
+		pos.Symbol, pos.Side, pos.EntryPrice, pos.Quantity, pos.QuoteSpent,
+		pos.OrderID, pos.OpenedAt.UnixMilli(),
+	)
+	if err != nil {
+		return fmt.Errorf("store: upsert position %s: %w", pos.Symbol, err)
+	}
+	return nil
+}
+
+// DeletePosition deletes the open position for a given symbol.
+func (db *DB) DeletePosition(symbol string) error {
+	_, err := db.conn.Exec(`DELETE FROM positions WHERE symbol = ?`, symbol)
+	if err != nil {
+		return fmt.Errorf("store: delete position %s: %w", symbol, err)
+	}
+	return nil
+}
+
+// GetPosition retrieves an open position by symbol, or nil if none exists.
+func (db *DB) GetPosition(symbol string) (*StoredPosition, error) {
+	query := `SELECT symbol, side, entry_price, quantity, quote_spent, order_id, opened_at FROM positions WHERE symbol = ?`
+	row := db.conn.QueryRow(query, symbol)
+
+	var p StoredPosition
+	var openedAtMs int64
+	if err := row.Scan(&p.Symbol, &p.Side, &p.EntryPrice, &p.Quantity, &p.QuoteSpent, &p.OrderID, &openedAtMs); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("store: get position %s: %w", symbol, err)
+	}
+	p.OpenedAt = time.UnixMilli(openedAtMs)
+	return &p, nil
+}
+
+// GetAllPositions returns all currently open positions ordered by opened_at ascending.
+func (db *DB) GetAllPositions() ([]StoredPosition, error) {
+	query := `SELECT symbol, side, entry_price, quantity, quote_spent, order_id, opened_at FROM positions ORDER BY opened_at ASC`
+	rows, err := db.conn.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("store: get all positions: %w", err)
+	}
+	defer rows.Close()
+
+	var positions []StoredPosition
+	for rows.Next() {
+		var p StoredPosition
+		var openedAtMs int64
+		if err := rows.Scan(&p.Symbol, &p.Side, &p.EntryPrice, &p.Quantity, &p.QuoteSpent, &p.OrderID, &openedAtMs); err != nil {
+			return nil, fmt.Errorf("store: scan position: %w", err)
+		}
+		p.OpenedAt = time.UnixMilli(openedAtMs)
+		positions = append(positions, p)
+	}
+	return positions, rows.Err()
+}
+
+// CountPositions returns the count of open positions.
+func (db *DB) CountPositions() (int, error) {
+	var count int
+	err := db.conn.QueryRow(`SELECT COUNT(*) FROM positions`).Scan(&count)
+	return count, err
+}
+
+// HasPosition checks whether an open position exists for the given symbol.
+func (db *DB) HasPosition(symbol string) (bool, error) {
+	var exists int
+	err := db.conn.QueryRow(`SELECT 1 FROM positions WHERE symbol = ? LIMIT 1`, symbol).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return exists == 1, err
+}
+
+// InsertTrade records a closed trade.
+func (db *DB) InsertTrade(t Trade) error {
+	query := `
+		INSERT INTO trades
+			(order_id, symbol, side, entry_price, exit_price, quantity, quote_spent, pnl, pnl_pct, exit_reason, opened_at, closed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+	openedAtMs := t.OpenedAt.UnixMilli()
+	closedAtMs := t.ClosedAt.UnixMilli()
+	if closedAtMs == 0 {
+		closedAtMs = time.Now().UnixMilli()
+	}
+	_, err := db.conn.Exec(query,
+		t.OrderID, t.Symbol, t.Side, t.EntryPrice, t.ExitPrice, t.Quantity,
+		t.QuoteSpent, t.PnL, t.PnLPct, t.ExitReason, openedAtMs, closedAtMs,
+	)
+	if err != nil {
+		return fmt.Errorf("store: insert trade: %w", err)
+	}
+	return nil
+}
+
+// GetAllTrades returns all completed trades ordered ascending by closed_at.
+func (db *DB) GetAllTrades() ([]Trade, error) {
+	return db.getTradesWithQuery(`SELECT id, order_id, symbol, side, entry_price, exit_price, quantity, quote_spent, pnl, pnl_pct, exit_reason, opened_at, closed_at FROM trades ORDER BY closed_at ASC`)
+}
+
+// GetTrades returns recent completed trades up to limit, ordered descending by closed_at.
+func (db *DB) GetTrades(limit int) ([]Trade, error) {
+	q := `SELECT id, order_id, symbol, side, entry_price, exit_price, quantity, quote_spent, pnl, pnl_pct, exit_reason, opened_at, closed_at FROM trades ORDER BY closed_at DESC`
+	if limit > 0 {
+		q += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	return db.getTradesWithQuery(q)
+}
+
+func (db *DB) getTradesWithQuery(query string) ([]Trade, error) {
+	rows, err := db.conn.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("store: query trades: %w", err)
+	}
+	defer rows.Close()
+
+	var trades []Trade
+	for rows.Next() {
+		var t Trade
+		var openedAtMs, closedAtMs int64
+		if err := rows.Scan(
+			&t.ID, &t.OrderID, &t.Symbol, &t.Side, &t.EntryPrice, &t.ExitPrice,
+			&t.Quantity, &t.QuoteSpent, &t.PnL, &t.PnLPct, &t.ExitReason,
+			&openedAtMs, &closedAtMs,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan trade: %w", err)
+		}
+		t.OpenedAt = time.UnixMilli(openedAtMs)
+		t.ClosedAt = time.UnixMilli(closedAtMs)
+		trades = append(trades, t)
+	}
+	return trades, rows.Err()
+}
+
+// GetDailyPnL returns the sum of realised PnL for trades closed since the given time.
+func (db *DB) GetDailyPnL(since time.Time) (float64, error) {
+	var total sql.NullFloat64
+	query := `SELECT SUM(pnl) FROM trades WHERE closed_at >= ?`
+	err := db.conn.QueryRow(query, since.UnixMilli()).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("store: daily pnl: %w", err)
+	}
+	if !total.Valid {
+		return 0, nil
+	}
+	return total.Float64, nil
+}
+

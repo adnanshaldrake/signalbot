@@ -84,8 +84,8 @@ func runBot(cfg *config.BotConfig, db *store.DB) {
 	// Initialise ticker cache (in-memory if no Redis, Redis otherwise)
 	app.InitCache(cfg)
 
-	// State manager — auto-selects Redis or in-memory based on REDIS_URL
-	stateMgr, err := state.NewStateManager(cfg.RedisURL, cfg.RedisUsername, cfg.RedisPassword)
+	// State manager — auto-selects Redis, SQLite (if no Redis), or in-memory
+	stateMgr, err := state.NewStateManager(cfg.RedisURL, cfg.RedisUsername, cfg.RedisPassword, db)
 	if err != nil {
 		slog.Error("failed to init state manager", "error", err)
 		os.Exit(1)
@@ -258,7 +258,7 @@ func runCycle(
 					paperTrader.PlaceMarketOrder(ctx, symbol, binance.Sell, currentPrice, pos.QuoteSpent) //nolint:errcheck
 				} else {
 					binanceClient.PlaceMarketOrder(symbol, binance.Sell, pos.Quantity) //nolint:errcheck
-					stateMgr.ClosePosition(ctx, symbol, pnl)                           //nolint:errcheck
+					_ = stateMgr.ClosePositionWithDetails(ctx, symbol, currentPrice, pnl, "EMERGENCY_RUG")
 				}
 				notifier.TradeClosed(symbol, tradingMode(cfg), pos.EntryPrice, currentPrice, pnl, pnlPct)
 				continue
@@ -285,7 +285,11 @@ func runCycle(
 						notifier.Error("PlaceMarketOrder SELL", err.Error())
 						continue
 					}
-					if err := stateMgr.ClosePosition(ctx, symbol, pnl); err != nil {
+					exitReason := "STOP_LOSS"
+					if riskMgr.CheckTakeProfit(pos, currentPrice) {
+						exitReason = "TAKE_PROFIT"
+					}
+					if err := stateMgr.ClosePositionWithDetails(ctx, symbol, currentPrice, pnl, exitReason); err != nil {
 						slog.Error("ClosePosition failed", "symbol", symbol, "error", err)
 					}
 				}
