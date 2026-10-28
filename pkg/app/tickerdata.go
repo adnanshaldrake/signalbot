@@ -2,9 +2,9 @@
 package app
 
 import (
-	"adnan/binance-bot/pkg/config"
-	"adnan/binance-bot/pkg/models"
-	"adnan/binance-bot/pkg/utils"
+	"github.com/adnanshaldrake/signalbot/pkg/config"
+	"github.com/adnanshaldrake/signalbot/pkg/models"
+	"github.com/adnanshaldrake/signalbot/pkg/utils"
 	"encoding/json"
 	"fmt"
 	"net/http"

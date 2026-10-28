@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"adnan/binance-bot/pkg/state"
+	"github.com/adnanshaldrake/signalbot/pkg/state"
 )
 
 func TestCalcPnL(t *testing.T) {

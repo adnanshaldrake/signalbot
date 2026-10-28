@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"time"
 
-	"adnan/binance-bot/pkg/indicators"
+	"github.com/adnanshaldrake/signalbot/pkg/indicators"
 )
 
 // Candle is a single OHLCV bar with native float64 fields.

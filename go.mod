@@ -1,4 +1,4 @@
-module adnan/binance-bot
+module github.com/adnanshaldrake/signalbot
 
 go 1.26.4
 

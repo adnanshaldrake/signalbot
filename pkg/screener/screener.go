@@ -14,11 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"adnan/binance-bot/pkg/app"
-	"adnan/binance-bot/pkg/backtest"
-	"adnan/binance-bot/pkg/config"
-	"adnan/binance-bot/pkg/store"
-	"adnan/binance-bot/pkg/utils"
+	"github.com/adnanshaldrake/signalbot/pkg/app"
+	"github.com/adnanshaldrake/signalbot/pkg/backtest"
+	"github.com/adnanshaldrake/signalbot/pkg/config"
+	"github.com/adnanshaldrake/signalbot/pkg/store"
+	"github.com/adnanshaldrake/signalbot/pkg/utils"
 )
 
 // Result holds the backtest outcome for a single screened symbol.

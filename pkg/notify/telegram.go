@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"adnan/binance-bot/pkg/config"
+	"github.com/adnanshaldrake/signalbot/pkg/config"
 )
 
 const telegramAPIBase = "https://api.telegram.org/bot"

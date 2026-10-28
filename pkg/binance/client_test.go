@@ -1,7 +1,7 @@
 package binance
 
 import (
-	"adnan/binance-bot/pkg/config"
+	"github.com/adnanshaldrake/signalbot/pkg/config"
 	"log"
 	"log/slog"
 	"net/http"

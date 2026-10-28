@@ -14,9 +14,9 @@ import (
 	"log/slog"
 	"time"
 
-	"adnan/binance-bot/pkg/filter"
-	"adnan/binance-bot/pkg/store"
-	"adnan/binance-bot/pkg/strategy"
+	"github.com/adnanshaldrake/signalbot/pkg/filter"
+	"github.com/adnanshaldrake/signalbot/pkg/store"
+	"github.com/adnanshaldrake/signalbot/pkg/strategy"
 )
 
 // RunnerV2 is a drop-in replacement for Runner that uses pkg/strategy instead
