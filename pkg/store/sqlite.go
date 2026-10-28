@@ -28,29 +28,38 @@ CREATE TABLE IF NOT EXISTS candles (
 CREATE INDEX IF NOT EXISTS idx_candles_lookup ON candles(symbol, interval, open_time);
 
 CREATE TABLE IF NOT EXISTS positions (
-    symbol      TEXT    PRIMARY KEY,
-    side        TEXT    NOT NULL,
-    entry_price REAL    NOT NULL,
-    quantity    REAL    NOT NULL,
-    quote_spent REAL    NOT NULL,
-    order_id    INTEGER NOT NULL,
-    opened_at   INTEGER NOT NULL  -- Unix milliseconds
+    symbol          TEXT    PRIMARY KEY,
+    side            TEXT    NOT NULL,
+    entry_price     REAL    NOT NULL,
+    quantity        REAL    NOT NULL,
+    quote_spent     REAL    NOT NULL,
+    order_id        INTEGER NOT NULL,
+    opened_at       INTEGER NOT NULL,  -- Unix milliseconds
+    entry_rsi       REAL    DEFAULT 0,
+    entry_bb_width  REAL    DEFAULT 0,
+    entry_score     REAL    DEFAULT 0,
+    entry_vol_ratio REAL    DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS trades (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    order_id    INTEGER NOT NULL,
-    symbol      TEXT    NOT NULL,
-    side        TEXT    NOT NULL,
-    entry_price REAL    NOT NULL,
-    exit_price  REAL    NOT NULL,
-    quantity    REAL    NOT NULL,
-    quote_spent REAL    NOT NULL,
-    pnl         REAL    NOT NULL,
-    pnl_pct     REAL    NOT NULL,
-    exit_reason TEXT    NOT NULL,  -- "TAKE_PROFIT", "STOP_LOSS", "EMERGENCY_RUG", "MANUAL"
-    opened_at   INTEGER NOT NULL,  -- Unix milliseconds
-    closed_at   INTEGER NOT NULL   -- Unix milliseconds
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id          INTEGER NOT NULL,
+    symbol            TEXT    NOT NULL,
+    side              TEXT    NOT NULL,
+    entry_price       REAL    NOT NULL,
+    exit_price        REAL    NOT NULL,
+    quantity          REAL    NOT NULL,
+    quote_spent       REAL    NOT NULL,
+    pnl               REAL    NOT NULL,
+    pnl_pct           REAL    NOT NULL,
+    exit_reason       TEXT    NOT NULL,  -- "TAKE_PROFIT", "STOP_LOSS", "EMERGENCY_RUG", "MANUAL"
+    entry_rsi         REAL    DEFAULT 0,
+    entry_bb_width    REAL    DEFAULT 0,
+    entry_score       REAL    DEFAULT 0,
+    entry_vol_ratio   REAL    DEFAULT 0,
+    hold_duration_sec INTEGER DEFAULT 0,
+    opened_at         INTEGER NOT NULL,  -- Unix milliseconds
+    closed_at         INTEGER NOT NULL   -- Unix milliseconds
 );
 CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_trades_closed_at ON trades(closed_at);
@@ -70,30 +79,39 @@ type Candle struct {
 
 // StoredPosition represents an active open position stored in SQLite.
 type StoredPosition struct {
-	Symbol     string    `json:"symbol"`
-	Side       string    `json:"side"`
-	EntryPrice float64   `json:"entry_price"`
-	Quantity   float64   `json:"quantity"`
-	QuoteSpent float64   `json:"quote_spent"`
-	OrderID    int64     `json:"order_id"`
-	OpenedAt   time.Time `json:"opened_at"`
+	Symbol        string    `json:"symbol"`
+	Side          string    `json:"side"`
+	EntryPrice    float64   `json:"entry_price"`
+	Quantity      float64   `json:"quantity"`
+	QuoteSpent    float64   `json:"quote_spent"`
+	OrderID       int64     `json:"order_id"`
+	OpenedAt      time.Time `json:"opened_at"`
+	EntryRSI      float64   `json:"entry_rsi"`
+	EntryBBWidth  float64   `json:"entry_bb_width"`
+	EntryScore    float64   `json:"entry_score"`
+	EntryVolRatio float64   `json:"entry_vol_ratio"`
 }
 
 // Trade represents a completed round-trip trade (entry to exit).
 type Trade struct {
-	ID         int64     `json:"id"`
-	OrderID    int64     `json:"order_id"`
-	Symbol     string    `json:"symbol"`
-	Side       string    `json:"side"`
-	EntryPrice float64   `json:"entry_price"`
-	ExitPrice  float64   `json:"exit_price"`
-	Quantity   float64   `json:"quantity"`
-	QuoteSpent float64   `json:"quote_spent"`
-	PnL        float64   `json:"pnl"`
-	PnLPct     float64   `json:"pnl_pct"`
-	ExitReason string    `json:"exit_reason"`
-	OpenedAt   time.Time `json:"opened_at"`
-	ClosedAt   time.Time `json:"closed_at"`
+	ID              int64     `json:"id"`
+	OrderID         int64     `json:"order_id"`
+	Symbol          string    `json:"symbol"`
+	Side            string    `json:"side"`
+	EntryPrice      float64   `json:"entry_price"`
+	ExitPrice       float64   `json:"exit_price"`
+	Quantity        float64   `json:"quantity"`
+	QuoteSpent      float64   `json:"quote_spent"`
+	PnL             float64   `json:"pnl"`
+	PnLPct          float64   `json:"pnl_pct"`
+	ExitReason      string    `json:"exit_reason"`
+	EntryRSI        float64   `json:"entry_rsi"`
+	EntryBBWidth    float64   `json:"entry_bb_width"`
+	EntryScore      float64   `json:"entry_score"`
+	EntryVolRatio   float64   `json:"entry_vol_ratio"`
+	HoldDurationSec int64     `json:"hold_duration_sec"`
+	OpenedAt        time.Time `json:"opened_at"`
+	ClosedAt        time.Time `json:"closed_at"`
 }
 
 // DB wraps a SQLite database connection for candle storage.
@@ -121,6 +139,22 @@ func Open(dbPath string) (*DB, error) {
 
 	if _, err := conn.Exec(schema); err != nil {
 		return nil, fmt.Errorf("store: create schema: %w", err)
+	}
+
+	migrations := []string{
+		`ALTER TABLE positions ADD COLUMN entry_rsi REAL DEFAULT 0;`,
+		`ALTER TABLE positions ADD COLUMN entry_bb_width REAL DEFAULT 0;`,
+		`ALTER TABLE positions ADD COLUMN entry_score REAL DEFAULT 0;`,
+		`ALTER TABLE positions ADD COLUMN entry_vol_ratio REAL DEFAULT 0;`,
+		`ALTER TABLE trades ADD COLUMN entry_rsi REAL DEFAULT 0;`,
+		`ALTER TABLE trades ADD COLUMN entry_bb_width REAL DEFAULT 0;`,
+		`ALTER TABLE trades ADD COLUMN entry_score REAL DEFAULT 0;`,
+		`ALTER TABLE trades ADD COLUMN entry_vol_ratio REAL DEFAULT 0;`,
+		`ALTER TABLE trades ADD COLUMN hold_duration_sec INTEGER DEFAULT 0;`,
+		`UPDATE trades SET hold_duration_sec = (closed_at - opened_at) / 1000 WHERE (hold_duration_sec = 0 OR hold_duration_sec IS NULL) AND closed_at > opened_at;`,
+	}
+	for _, stmt := range migrations {
+		_, _ = conn.Exec(stmt) // ignore duplicate column error on already-migrated DBs
 	}
 
 	return &DB{conn: conn}, nil
@@ -246,12 +280,13 @@ func (db *DB) ListSymbols() ([]string, error) {
 func (db *DB) UpsertPosition(pos StoredPosition) error {
 	query := `
 		INSERT OR REPLACE INTO positions
-			(symbol, side, entry_price, quantity, quote_spent, order_id, opened_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+			(symbol, side, entry_price, quantity, quote_spent, order_id, opened_at, entry_rsi, entry_bb_width, entry_score, entry_vol_ratio)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	_, err := db.conn.Exec(query,
 		pos.Symbol, pos.Side, pos.EntryPrice, pos.Quantity, pos.QuoteSpent,
 		pos.OrderID, pos.OpenedAt.UnixMilli(),
+		pos.EntryRSI, pos.EntryBBWidth, pos.EntryScore, pos.EntryVolRatio,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert position %s: %w", pos.Symbol, err)
@@ -270,12 +305,12 @@ func (db *DB) DeletePosition(symbol string) error {
 
 // GetPosition retrieves an open position by symbol, or nil if none exists.
 func (db *DB) GetPosition(symbol string) (*StoredPosition, error) {
-	query := `SELECT symbol, side, entry_price, quantity, quote_spent, order_id, opened_at FROM positions WHERE symbol = ?`
+	query := `SELECT symbol, side, entry_price, quantity, quote_spent, order_id, opened_at, entry_rsi, entry_bb_width, entry_score, entry_vol_ratio FROM positions WHERE symbol = ?`
 	row := db.conn.QueryRow(query, symbol)
 
 	var p StoredPosition
 	var openedAtMs int64
-	if err := row.Scan(&p.Symbol, &p.Side, &p.EntryPrice, &p.Quantity, &p.QuoteSpent, &p.OrderID, &openedAtMs); err != nil {
+	if err := row.Scan(&p.Symbol, &p.Side, &p.EntryPrice, &p.Quantity, &p.QuoteSpent, &p.OrderID, &openedAtMs, &p.EntryRSI, &p.EntryBBWidth, &p.EntryScore, &p.EntryVolRatio); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -287,7 +322,7 @@ func (db *DB) GetPosition(symbol string) (*StoredPosition, error) {
 
 // GetAllPositions returns all currently open positions ordered by opened_at ascending.
 func (db *DB) GetAllPositions() ([]StoredPosition, error) {
-	query := `SELECT symbol, side, entry_price, quantity, quote_spent, order_id, opened_at FROM positions ORDER BY opened_at ASC`
+	query := `SELECT symbol, side, entry_price, quantity, quote_spent, order_id, opened_at, entry_rsi, entry_bb_width, entry_score, entry_vol_ratio FROM positions ORDER BY opened_at ASC`
 	rows, err := db.conn.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("store: get all positions: %w", err)
@@ -298,7 +333,7 @@ func (db *DB) GetAllPositions() ([]StoredPosition, error) {
 	for rows.Next() {
 		var p StoredPosition
 		var openedAtMs int64
-		if err := rows.Scan(&p.Symbol, &p.Side, &p.EntryPrice, &p.Quantity, &p.QuoteSpent, &p.OrderID, &openedAtMs); err != nil {
+		if err := rows.Scan(&p.Symbol, &p.Side, &p.EntryPrice, &p.Quantity, &p.QuoteSpent, &p.OrderID, &openedAtMs, &p.EntryRSI, &p.EntryBBWidth, &p.EntryScore, &p.EntryVolRatio); err != nil {
 			return nil, fmt.Errorf("store: scan position: %w", err)
 		}
 		p.OpenedAt = time.UnixMilli(openedAtMs)
@@ -328,17 +363,23 @@ func (db *DB) HasPosition(symbol string) (bool, error) {
 func (db *DB) InsertTrade(t Trade) error {
 	query := `
 		INSERT INTO trades
-			(order_id, symbol, side, entry_price, exit_price, quantity, quote_spent, pnl, pnl_pct, exit_reason, opened_at, closed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(order_id, symbol, side, entry_price, exit_price, quantity, quote_spent, pnl, pnl_pct, exit_reason, entry_rsi, entry_bb_width, entry_score, entry_vol_ratio, hold_duration_sec, opened_at, closed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	openedAtMs := t.OpenedAt.UnixMilli()
 	closedAtMs := t.ClosedAt.UnixMilli()
 	if closedAtMs == 0 {
 		closedAtMs = time.Now().UnixMilli()
 	}
+	holdSec := t.HoldDurationSec
+	if holdSec == 0 && closedAtMs > openedAtMs {
+		holdSec = (closedAtMs - openedAtMs) / 1000
+	}
 	_, err := db.conn.Exec(query,
 		t.OrderID, t.Symbol, t.Side, t.EntryPrice, t.ExitPrice, t.Quantity,
-		t.QuoteSpent, t.PnL, t.PnLPct, t.ExitReason, openedAtMs, closedAtMs,
+		t.QuoteSpent, t.PnL, t.PnLPct, t.ExitReason,
+		t.EntryRSI, t.EntryBBWidth, t.EntryScore, t.EntryVolRatio,
+		holdSec, openedAtMs, closedAtMs,
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert trade: %w", err)
@@ -348,12 +389,12 @@ func (db *DB) InsertTrade(t Trade) error {
 
 // GetAllTrades returns all completed trades ordered ascending by closed_at.
 func (db *DB) GetAllTrades() ([]Trade, error) {
-	return db.getTradesWithQuery(`SELECT id, order_id, symbol, side, entry_price, exit_price, quantity, quote_spent, pnl, pnl_pct, exit_reason, opened_at, closed_at FROM trades ORDER BY closed_at ASC`)
+	return db.getTradesWithQuery(`SELECT id, order_id, symbol, side, entry_price, exit_price, quantity, quote_spent, pnl, pnl_pct, exit_reason, entry_rsi, entry_bb_width, entry_score, entry_vol_ratio, hold_duration_sec, opened_at, closed_at FROM trades ORDER BY closed_at ASC`)
 }
 
 // GetTrades returns recent completed trades up to limit, ordered descending by closed_at.
 func (db *DB) GetTrades(limit int) ([]Trade, error) {
-	q := `SELECT id, order_id, symbol, side, entry_price, exit_price, quantity, quote_spent, pnl, pnl_pct, exit_reason, opened_at, closed_at FROM trades ORDER BY closed_at DESC`
+	q := `SELECT id, order_id, symbol, side, entry_price, exit_price, quantity, quote_spent, pnl, pnl_pct, exit_reason, entry_rsi, entry_bb_width, entry_score, entry_vol_ratio, hold_duration_sec, opened_at, closed_at FROM trades ORDER BY closed_at DESC`
 	if limit > 0 {
 		q += fmt.Sprintf(" LIMIT %d", limit)
 	}
@@ -374,12 +415,16 @@ func (db *DB) getTradesWithQuery(query string) ([]Trade, error) {
 		if err := rows.Scan(
 			&t.ID, &t.OrderID, &t.Symbol, &t.Side, &t.EntryPrice, &t.ExitPrice,
 			&t.Quantity, &t.QuoteSpent, &t.PnL, &t.PnLPct, &t.ExitReason,
-			&openedAtMs, &closedAtMs,
+			&t.EntryRSI, &t.EntryBBWidth, &t.EntryScore, &t.EntryVolRatio,
+			&t.HoldDurationSec, &openedAtMs, &closedAtMs,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan trade: %w", err)
 		}
 		t.OpenedAt = time.UnixMilli(openedAtMs)
 		t.ClosedAt = time.UnixMilli(closedAtMs)
+		if t.HoldDurationSec == 0 && closedAtMs > openedAtMs {
+			t.HoldDurationSec = (closedAtMs - openedAtMs) / 1000
+		}
 		trades = append(trades, t)
 	}
 	return trades, rows.Err()

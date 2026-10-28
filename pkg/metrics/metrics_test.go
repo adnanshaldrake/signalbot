@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -190,5 +191,62 @@ func TestCalculate_PriorWindowComparison(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "Improving") {
 		t.Errorf("expected 'Improving' trend in output: %s", out)
+	}
+	if !strings.Contains(out, "RECENT SELLS") {
+		t.Errorf("expected RECENT SELLS section in output: %s", out)
+	}
+}
+
+func TestExportTrades(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test_export.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now()
+	trade := store.Trade{
+		OrderID:         1001,
+		Symbol:          "SOLUSDT",
+		Side:            "BUY",
+		EntryPrice:      150.0,
+		ExitPrice:       156.0,
+		Quantity:        0.2,
+		QuoteSpent:      30.0,
+		PnL:             1.20,
+		PnLPct:          4.0,
+		ExitReason:      "TAKE_PROFIT",
+		EntryRSI:        28.4,
+		EntryBBWidth:    0.025,
+		EntryScore:      0.85,
+		EntryVolRatio:   1.30,
+		HoldDurationSec: 3600,
+		OpenedAt:        now.Add(-1 * time.Hour),
+		ClosedAt:        now,
+	}
+
+	if err := db.InsertTrade(trade); err != nil {
+		t.Fatalf("failed to insert trade: %v", err)
+	}
+
+	// Test JSON export
+	var jsonBuf bytes.Buffer
+	if err := ExportTradesJSON(&jsonBuf, db); err != nil {
+		t.Fatalf("export JSON failed: %v", err)
+	}
+	jsonOut := jsonBuf.String()
+	if !strings.Contains(jsonOut, "SOLUSDT") || !strings.Contains(jsonOut, "28.4") || !strings.Contains(jsonOut, "TAKE_PROFIT") {
+		t.Errorf("unexpected JSON export: %s", jsonOut)
+	}
+
+	// Test CSV export
+	var csvBuf bytes.Buffer
+	if err := ExportTradesCSV(&csvBuf, db); err != nil {
+		t.Fatalf("export CSV failed: %v", err)
+	}
+	csvOut := csvBuf.String()
+	if !strings.Contains(csvOut, "SOLUSDT") || !strings.Contains(csvOut, "entry_rsi") {
+		t.Errorf("unexpected CSV export: %s", csvOut)
 	}
 }
