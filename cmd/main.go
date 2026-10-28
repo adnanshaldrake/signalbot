@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/pprof"
 	"strconv"
 	"syscall"
 	"time"
@@ -37,7 +39,38 @@ func main() {
 	backfillFlag := flag.Bool("backfill", false, "Download and store historical candles, then exit")
 	backtestFlag := flag.Bool("backtest", false, "Run backtest over stored candles, then exit")
 	metricsFlag := flag.Bool("metrics", false, "Display trade performance metrics and exit")
+	cpuProfile := flag.String("cpuprofile", "", "Write cpu profile to file")
+	memProfile := flag.String("memprofile", "", "Write memory profile to file")
 	flag.Parse()
+
+	if *cpuProfile != "" {
+		f, err := os.Create(*cpuProfile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "could not create CPU profile: %v\n", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			fmt.Fprintf(os.Stderr, "could not start CPU profile: %v\n", err)
+			os.Exit(1)
+		}
+		defer pprof.StopCPUProfile()
+	}
+
+	if *memProfile != "" {
+		defer func() {
+			f, err := os.Create(*memProfile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "could not create memory profile: %v\n", err)
+				return
+			}
+			defer f.Close()
+			runtime.GC()
+			if err := pprof.WriteHeapProfile(f); err != nil {
+				fmt.Fprintf(os.Stderr, "could not write memory profile: %v\n", err)
+			}
+		}()
+	}
 
 	// --- Quick metrics inspection mode ---
 	if *metricsFlag {
