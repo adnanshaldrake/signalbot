@@ -346,8 +346,8 @@ func (c *Client) PlaceMarketOrder(symbol string, side OrderSide, amount float64)
 		if side == Buy && !rule.QuoteOrderQtyMarketAllowed {
 			return nil, fmt.Errorf("PlaceMarketOrder: quoteOrderQty market buy is not allowed for %s", symbol)
 		}
-		if rule.MinNotional > 0 && amount < rule.MinNotional {
-			return nil, fmt.Errorf("PlaceMarketOrder: amount %.2f is below min notional %.2f for %s", amount, rule.MinNotional, symbol)
+		if side == Buy && rule.MinNotional > 0 && amount < rule.MinNotional {
+			return nil, fmt.Errorf("PlaceMarketOrder: buy amount %.2f USDT is below min notional %.2f for %s", amount, rule.MinNotional, symbol)
 		}
 	}
 

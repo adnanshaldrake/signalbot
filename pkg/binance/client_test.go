@@ -4,6 +4,7 @@ import (
 	"adnan/binance-bot/pkg/config"
 	"log"
 	"log/slog"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -198,4 +199,43 @@ func TestClosedMarketRejection(t *testing.T) {
 		t.Errorf("expected error to mention 'market is closed', got: %v", err)
 	}
 }
+
+func TestPlaceMarketOrderNotionalValidation(t *testing.T) {
+	client := &Client{
+		httpClient: &http.Client{},
+		baseURL:    "http://127.0.0.1:9999",
+		exchangeRules: map[string]SymbolFilter{
+			"SOXSBUSDT": {
+				Status:                     "TRADING",
+				IsSpotTradingAllowed:       true,
+				QuoteOrderQtyMarketAllowed: true,
+				MinNotional:                5.0,
+				StepSize:                   0.0001,
+				MinQty:                     0.0001,
+				Decimals:                   4,
+			},
+		},
+	}
+
+	// 1. Buy below min notional ($3 < $5) must fail
+	_, err := client.PlaceMarketOrder("SOXSBUSDT", Buy, 3.0)
+	if err == nil || !strings.Contains(err.Error(), "below min notional") {
+		t.Fatalf("expected Buy under min notional to fail, got: %v", err)
+	}
+
+	// 2. Sell with token quantity < MinNotional (e.g. 0.8891 tokens, worth $38.60, but qty < 5.0)
+	// MUST NOT fail with "below min notional".
+	// It will proceed to format quantity and then attempt HTTP request (which will fail due to no baseURL/creds, not min notional).
+	_, err = client.PlaceMarketOrder("SOXSBUSDT", Sell, 0.889110)
+	if err != nil && strings.Contains(err.Error(), "below min notional") {
+		t.Fatalf("Sell of 0.8891 tokens erroneously failed with min notional error: %v", err)
+	}
+
+	// 3. Sell below MinQty must fail with minimum allowed error
+	_, err = client.PlaceMarketOrder("SOXSBUSDT", Sell, 0.00001)
+	if err == nil || !strings.Contains(err.Error(), "below minimum allowed") {
+		t.Fatalf("expected Sell below MinQty to fail with 'below minimum allowed', got: %v", err)
+	}
+}
+
 
