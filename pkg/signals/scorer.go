@@ -32,6 +32,8 @@ type Candidate struct {
 	UpperBB       float64 // upper Bollinger Band value at signal candle
 	RSI           float64 // RSI value at signal candle
 	Volume24hUSDT float64 // estimated 24 h USDT volume (base volume * close price)
+	BBBandwidth   float64 // Bollinger Band bandwidth (volatility snapshot)
+	VolRatio      float64 // volume ratio relative to average
 
 	// Populated by Score()
 	Score          float64 // composite [0,1]

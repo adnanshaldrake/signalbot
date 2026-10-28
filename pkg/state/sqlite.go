@@ -26,13 +26,17 @@ func (m *SQLiteManager) Close() error { return nil }
 // OpenPosition stores a new position in SQLite.
 func (m *SQLiteManager) OpenPosition(_ context.Context, pos Position) error {
 	sp := store.StoredPosition{
-		Symbol:     pos.Symbol,
-		Side:       pos.Side,
-		EntryPrice: pos.EntryPrice,
-		Quantity:   pos.Quantity,
-		QuoteSpent: pos.QuoteSpent,
-		OrderID:    pos.OrderID,
-		OpenedAt:   pos.OpenedAt,
+		Symbol:        pos.Symbol,
+		Side:          pos.Side,
+		EntryPrice:    pos.EntryPrice,
+		Quantity:      pos.Quantity,
+		QuoteSpent:    pos.QuoteSpent,
+		OrderID:       pos.OrderID,
+		OpenedAt:      pos.OpenedAt,
+		EntryRSI:      pos.EntryRSI,
+		EntryBBWidth:  pos.EntryBBWidth,
+		EntryScore:    pos.EntryScore,
+		EntryVolRatio: pos.EntryVolRatio,
 	}
 	return m.db.UpsertPosition(sp)
 }
@@ -71,18 +75,23 @@ func (m *SQLiteManager) ClosePositionWithDetails(_ context.Context, symbol strin
 		}
 
 		trade := store.Trade{
-			OrderID:    pos.OrderID,
-			Symbol:     pos.Symbol,
-			Side:       pos.Side,
-			EntryPrice: pos.EntryPrice,
-			ExitPrice:  calcExitPrice,
-			Quantity:   pos.Quantity,
-			QuoteSpent: pos.QuoteSpent,
-			PnL:        realisedPnL,
-			PnLPct:     pnlPct,
-			ExitReason: reason,
-			OpenedAt:   pos.OpenedAt,
-			ClosedAt:   now,
+			OrderID:         pos.OrderID,
+			Symbol:          pos.Symbol,
+			Side:            pos.Side,
+			EntryPrice:      pos.EntryPrice,
+			ExitPrice:       calcExitPrice,
+			Quantity:        pos.Quantity,
+			QuoteSpent:      pos.QuoteSpent,
+			PnL:             realisedPnL,
+			PnLPct:          pnlPct,
+			ExitReason:      reason,
+			EntryRSI:        pos.EntryRSI,
+			EntryBBWidth:    pos.EntryBBWidth,
+			EntryScore:      pos.EntryScore,
+			EntryVolRatio:   pos.EntryVolRatio,
+			HoldDurationSec: (now.UnixMilli() - pos.OpenedAt.UnixMilli()) / 1000,
+			OpenedAt:        pos.OpenedAt,
+			ClosedAt:        now,
 		}
 		_ = m.db.InsertTrade(trade)
 	}
@@ -100,13 +109,17 @@ func (m *SQLiteManager) GetPosition(_ context.Context, symbol string) (*Position
 		return nil, nil
 	}
 	return &Position{
-		Symbol:     sp.Symbol,
-		Side:       sp.Side,
-		EntryPrice: sp.EntryPrice,
-		Quantity:   sp.Quantity,
-		QuoteSpent: sp.QuoteSpent,
-		OrderID:    sp.OrderID,
-		OpenedAt:   sp.OpenedAt,
+		Symbol:        sp.Symbol,
+		Side:          sp.Side,
+		EntryPrice:    sp.EntryPrice,
+		Quantity:      sp.Quantity,
+		QuoteSpent:    sp.QuoteSpent,
+		OrderID:       sp.OrderID,
+		OpenedAt:      sp.OpenedAt,
+		EntryRSI:      sp.EntryRSI,
+		EntryBBWidth:  sp.EntryBBWidth,
+		EntryScore:    sp.EntryScore,
+		EntryVolRatio: sp.EntryVolRatio,
 	}, nil
 }
 
@@ -119,13 +132,17 @@ func (m *SQLiteManager) GetAllPositions(_ context.Context) ([]Position, error) {
 	positions := make([]Position, 0, len(sps))
 	for _, sp := range sps {
 		positions = append(positions, Position{
-			Symbol:     sp.Symbol,
-			Side:       sp.Side,
-			EntryPrice: sp.EntryPrice,
-			Quantity:   sp.Quantity,
-			QuoteSpent: sp.QuoteSpent,
-			OrderID:    sp.OrderID,
-			OpenedAt:   sp.OpenedAt,
+			Symbol:        sp.Symbol,
+			Side:          sp.Side,
+			EntryPrice:    sp.EntryPrice,
+			Quantity:      sp.Quantity,
+			QuoteSpent:    sp.QuoteSpent,
+			OrderID:       sp.OrderID,
+			OpenedAt:      sp.OpenedAt,
+			EntryRSI:      sp.EntryRSI,
+			EntryBBWidth:  sp.EntryBBWidth,
+			EntryScore:    sp.EntryScore,
+			EntryVolRatio: sp.EntryVolRatio,
 		})
 	}
 	return positions, nil
