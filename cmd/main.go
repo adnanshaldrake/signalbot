@@ -105,6 +105,9 @@ func main() {
 		"interval", cfg.CandleInterval,
 		"paper_trading", cfg.PaperTrading,
 		"testnet", cfg.UseTestnet,
+		"max_hold_hours", cfg.MaxHoldHours,
+		"min_vol_ratio", cfg.MinVolRatio,
+		"min_score", cfg.MinSignalScore,
 	)
 
 	// --- Open SQLite for historical data ---
@@ -318,19 +321,21 @@ func runCycle(
 				continue
 			}
 
-			// Normal exit: SL/TP check only (strategy.ShouldExit is not used in the live
-			// loop — it requires a populated TradingRecord that we don't maintain per-symbol,
-			// and PositionOpenRule{} would never fire with a fresh record).
-			shouldExit := riskMgr.CheckStopLoss(pos, currentPrice) ||
-				riskMgr.CheckTakeProfit(pos, currentPrice)
+			// Normal exit: SL/TP or Max Hold check
+			isTP := riskMgr.CheckTakeProfit(pos, currentPrice)
+			isSL := riskMgr.CheckStopLoss(pos, currentPrice)
+			isMaxHold := riskMgr.CheckMaxHold(pos, time.Now())
+			shouldExit := isTP || isSL || isMaxHold
 
 			if shouldExit {
 				pnl := risk.CalcPnL(pos, currentPrice, cfg.TakerFeePct)
 				pnlPct := pnl / pos.QuoteSpent * 100
 
 				exitReason := "STOP_LOSS"
-				if riskMgr.CheckTakeProfit(pos, currentPrice) {
+				if isTP {
 					exitReason = "TAKE_PROFIT"
+				} else if isMaxHold && !isSL {
+					exitReason = "MAX_HOLD_TIMEOUT"
 				}
 
 				if cfg.PaperTrading {
@@ -412,6 +417,13 @@ func runCycle(
 			volRatio = (volumeBase * currentPrice) / avgVol
 		}
 
+		// Pre-entry volume surge check: require current candle volume to meet threshold vs average
+		if cfg.MinVolRatio > 0 && volRatio < cfg.MinVolRatio {
+			slog.Debug("entry candidate skipped — volume ratio below threshold",
+				"symbol", symbol, "vol_ratio", fmt.Sprintf("%.2f", volRatio), "min", cfg.MinVolRatio)
+			continue
+		}
+
 		candidates = append(candidates, signals.Candidate{
 			Symbol:        symbol,
 			CurrentPrice:  currentPrice,
@@ -443,6 +455,12 @@ func runCycle(
 		case <-ctx.Done():
 			return
 		default:
+		}
+
+		if cfg.MinSignalScore > 0 && candidate.Score < cfg.MinSignalScore {
+			slog.Debug("entry candidate skipped — score below threshold",
+				"symbol", candidate.Symbol, "score", fmt.Sprintf("%.2f", candidate.Score), "min", cfg.MinSignalScore)
+			continue
 		}
 
 		decision := riskMgr.CheckEntry(ctx, candidate.Symbol, candidate.CurrentPrice, candidate.AllocationUSDT)

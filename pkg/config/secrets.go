@@ -37,6 +37,7 @@ type BotConfig struct {
 	TakeProfitPct   float64 // TAKE_PROFIT_PCT — take-profit percentage; default 4.0
 	MaxDailyLossPct float64 // MAX_DAILY_LOSS_PCT — kill-switch threshold; default 5.0
 	TakerFeePct     float64 // TAKER_FEE_PCT — per-side trading fee % used in PnL; default 0.1
+	MaxHoldHours    float64 // MAX_HOLD_HOURS — max duration to hold a position in hours (0 to disable); default 20.0
 
 
 	// SQLite (backtesting / historical data)
@@ -51,6 +52,8 @@ type BotConfig struct {
 	SignalRSIWeight       float64 // SIGNAL_RSI_WEIGHT — RSI depth weight; default 0.30
 	SignalVolumeWeight    float64 // SIGNAL_VOLUME_WEIGHT — volume weight; default 0.20
 	SignalExtraBudgetUSDT float64 // SIGNAL_EXTRA_BUDGET_USDT — extra USDT distributed by score; default 40.0
+	MinVolRatio           float64 // MIN_VOL_RATIO — minimum volume ratio (curr vol / 20 avg vol) for 15m entry; default 1.0
+	MinSignalScore        float64 // MIN_SIGNAL_SCORE — minimum composite score [0, 1] for entry; default 0.50
 
 	// Pre-filter: symbol eligibility
 	MinVolume24hUSDT   float64 // MIN_VOLUME_24H_USDT — minimum 24h USDT volume; default 500000
@@ -126,6 +129,7 @@ func Load() (*BotConfig, error) {
 		TakeProfitPct:   getFloat64Env("TAKE_PROFIT_PCT", 4.0),
 		MaxDailyLossPct: getFloat64Env("MAX_DAILY_LOSS_PCT", 5.0),
 		TakerFeePct:     getFloat64Env("TAKER_FEE_PCT", 0.1),
+		MaxHoldHours:    getFloat64Env("MAX_HOLD_HOURS", 20.0),
 
 
 		SQLiteDBPath: getStringEnv("SQLITE_DB_PATH", "data/signalbot.db"),
@@ -137,6 +141,8 @@ func Load() (*BotConfig, error) {
 		SignalRSIWeight:       getFloat64Env("SIGNAL_RSI_WEIGHT", 0.30),
 		SignalVolumeWeight:    getFloat64Env("SIGNAL_VOLUME_WEIGHT", 0.20),
 		SignalExtraBudgetUSDT: getFloat64Env("SIGNAL_EXTRA_BUDGET_USDT", 40.0),
+		MinVolRatio:           getFloat64Env("MIN_VOL_RATIO", 1.0),
+		MinSignalScore:        getFloat64Env("MIN_SIGNAL_SCORE", 0.50),
 
 		MinVolume24hUSDT:   getFloat64Env("MIN_VOLUME_24H_USDT", 500_000),
 		MinTradeCount24h:   getIntEnv("MIN_TRADE_COUNT_24H", 5_000),

@@ -110,6 +110,25 @@ func (m *Manager) CheckTakeProfit(pos *state.Position, currentPrice float64) boo
 	return hit
 }
 
+// CheckMaxHold returns true if the position has been open longer than cfg.MaxHoldHours.
+// If cfg.MaxHoldHours <= 0 or pos.OpenedAt is zero, returns false (disabled).
+func (m *Manager) CheckMaxHold(pos *state.Position, now time.Time) bool {
+	if m.cfg.MaxHoldHours <= 0 || pos.OpenedAt.IsZero() {
+		return false
+	}
+	maxDuration := time.Duration(m.cfg.MaxHoldHours * float64(time.Hour))
+	hit := now.Sub(pos.OpenedAt) >= maxDuration
+	if hit {
+		slog.Info("max-hold duration exceeded",
+			"symbol", pos.Symbol,
+			"opened_at", pos.OpenedAt,
+			"held_hours", now.Sub(pos.OpenedAt).Hours(),
+			"max_hold_hours", m.cfg.MaxHoldHours,
+		)
+	}
+	return hit
+}
+
 // CalcPnL calculates realised net P&L in USDT when closing a BUY position.
 // proceeds = netQuantity * exitPrice, minus the estimated sell fee (sellFeePct, e.g. 0.1 = 0.1%).
 // pos.Quantity is already net of any buy-side base-asset commission, and
