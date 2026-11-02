@@ -1,11 +1,14 @@
 package metrics
 
 import (
+	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"math"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/adnanshaldrake/signalbot/pkg/store"
@@ -13,34 +16,40 @@ import (
 
 // DailySummary holds trade aggregations for a single day.
 type DailySummary struct {
-	Date          string  // YYYY-MM-DD
-	Trades        int
-	Wins          int
-	Losses        int
-	DailyPnL      float64
-	CumulativePnL float64
+	Date          string  `json:"date"` // YYYY-MM-DD
+	Trades        int     `json:"trades"`
+	Wins          int     `json:"wins"`
+	Losses        int     `json:"losses"`
+	DailyPnL      float64 `json:"daily_pnl"`
+	CumulativePnL float64 `json:"cumulative_pnl"`
 }
 
 // TradeMetrics contains overall performance, recent trends, daily breakdown, and active positions.
 type TradeMetrics struct {
-	TotalTrades    int
-	Wins           int
-	Losses         int
-	WinRate        float64 // percentage, e.g. 62.5
-	TotalPnL       float64
-	TodayTrades    int
-	TodayWins      int
-	TodayLosses    int
-	TodayPnL       float64
-	RecentTrades   int     // count in recent window (up to 10)
-	RecentWins     int
-	RecentLosses   int
-	RecentWinRate  float64 // percentage, e.g. 70.0
-	RecentPnL      float64
-	PriorWindowPnL float64
-	HasPriorWindow bool
-	DailySummaries []DailySummary
-	OpenPositions  []store.StoredPosition
+	TotalTrades    int                    `json:"total_trades"`
+	Wins           int                    `json:"wins"`
+	Losses         int                    `json:"losses"`
+	WinRate        float64                `json:"win_rate"` // percentage, e.g. 62.5
+	TotalPnL       float64                `json:"total_pnl"`
+	GrossProfit    float64                `json:"gross_profit"`
+	GrossLoss      float64                `json:"gross_loss"`
+	AvgWin         float64                `json:"avg_win"`
+	AvgLoss        float64                `json:"avg_loss"`
+	ProfitFactor   float64                `json:"profit_factor"`
+	TodayTrades    int                    `json:"today_trades"`
+	TodayWins      int                    `json:"today_wins"`
+	TodayLosses    int                    `json:"today_losses"`
+	TodayPnL       float64                `json:"today_pnl"`
+	RecentTrades   int                    `json:"recent_trades"` // count in recent window (up to 10)
+	RecentWins     int                    `json:"recent_wins"`
+	RecentLosses   int                    `json:"recent_losses"`
+	RecentWinRate  float64                `json:"recent_win_rate"` // percentage, e.g. 70.0
+	RecentPnL      float64                `json:"recent_pnl"`
+	PriorWindowPnL float64                `json:"prior_window_pnl"`
+	HasPriorWindow bool                   `json:"has_prior_window"`
+	RecentSells    []store.Trade          `json:"recent_sells"`
+	DailySummaries []DailySummary         `json:"daily_summaries"`
+	OpenPositions  []store.StoredPosition `json:"open_positions"`
 }
 
 // Calculate computes performance and trend metrics from a list of trades and open positions.
@@ -64,8 +73,10 @@ func Calculate(trades []store.Trade, positions []store.StoredPosition, now time.
 		m.TotalPnL += t.PnL
 		if t.PnL > 0 {
 			m.Wins++
+			m.GrossProfit += t.PnL
 		} else {
 			m.Losses++
+			m.GrossLoss += math.Abs(t.PnL)
 		}
 
 		// Today's stats
@@ -98,6 +109,17 @@ func Calculate(trades []store.Trade, positions []store.StoredPosition, now time.
 	if m.TotalTrades > 0 {
 		m.WinRate = float64(m.Wins) / float64(m.TotalTrades) * 100.0
 	}
+	if m.Wins > 0 {
+		m.AvgWin = m.GrossProfit / float64(m.Wins)
+	}
+	if m.Losses > 0 {
+		m.AvgLoss = m.GrossLoss / float64(m.Losses)
+	}
+	if m.GrossLoss > 0 {
+		m.ProfitFactor = m.GrossProfit / m.GrossLoss
+	} else if m.GrossProfit > 0 {
+		m.ProfitFactor = m.GrossProfit // no losses
+	}
 
 	// Recent 10 window
 	n := len(trades)
@@ -129,6 +151,11 @@ func Calculate(trades []store.Trade, positions []store.StoredPosition, now time.
 				m.PriorWindowPnL += t.PnL
 			}
 			m.HasPriorWindow = true
+		}
+
+		// Collect recent sells in reverse chronological order (latest sell first)
+		for i := n - 1; i >= n-recentCount; i-- {
+			m.RecentSells = append(m.RecentSells, trades[i])
 		}
 	}
 
@@ -210,6 +237,13 @@ func RenderDashboard(w io.Writer, m *TradeMetrics) {
 	fmt.Fprintf(w, "Total Trades:      %d (%d Wins / %d Losses)\n", m.TotalTrades, m.Wins, m.Losses)
 	fmt.Fprintf(w, "Overall Win Rate:  %.1f%%\n", m.WinRate)
 	fmt.Fprintf(w, "Total Realized:    %s USDT\n", formatUSDT(m.TotalPnL))
+	if m.Wins > 0 || m.Losses > 0 {
+		pfStr := fmt.Sprintf("%.2f", m.ProfitFactor)
+		if m.GrossLoss == 0 && m.GrossProfit > 0 {
+			pfStr = "∞ (No Losses)"
+		}
+		fmt.Fprintf(w, "Avg Win / Loss:    +$%.2f / -$%.2f (Profit Factor: %s)\n", m.AvgWin, m.AvgLoss, pfStr)
+	}
 	fmt.Fprintf(w, "Today's Trades:    %d (%d Wins / %d Losses)\n", m.TodayTrades, m.TodayWins, m.TodayLosses)
 	fmt.Fprintf(w, "Today's Realized:  %s USDT\n", formatUSDT(m.TodayPnL))
 
@@ -253,6 +287,34 @@ func RenderDashboard(w io.Writer, m *TradeMetrics) {
 		}
 	}
 
+	fmt.Fprintln(w, "\n--------------------------- RECENT SELLS (LAST 10) -----------------------------")
+	if len(m.RecentSells) == 0 {
+		fmt.Fprintln(w, "No completed sells recorded yet.")
+	} else {
+		fmt.Fprintf(w, "%-10s  %-12s  %10s  %10s  %11s  %8s  %9s  %-19s\n",
+			"SYMBOL", "REASON", "BUY PRICE", "SELL PRICE", "PNL (USDT)", "PNL (%)", "HOLD TIME", "CLOSED AT")
+		for _, t := range m.RecentSells {
+			closedStr := t.ClosedAt.Local().Format("2006-01-02 15:04:05")
+			reason := t.ExitReason
+			if reason == "" {
+				reason = "EXIT"
+			}
+			pnlPct := t.PnLPct
+			if pnlPct == 0 && t.QuoteSpent > 0 && t.PnL != 0 {
+				pnlPct = (t.PnL / t.QuoteSpent) * 100
+			}
+			pnlPctStr := fmt.Sprintf("%+.2f%%", pnlPct)
+
+			holdSec := t.HoldDurationSec
+			if holdSec == 0 && !t.ClosedAt.IsZero() && !t.OpenedAt.IsZero() {
+				holdSec = (t.ClosedAt.UnixMilli() - t.OpenedAt.UnixMilli()) / 1000
+			}
+
+			fmt.Fprintf(w, "%-10s  %-12s  %10.4f  %10.4f  %11s  %8s  %9s  %-19s\n",
+				t.Symbol, reason, t.EntryPrice, t.ExitPrice, formatUSDT(t.PnL), pnlPctStr, formatDuration(holdSec), closedStr)
+		}
+	}
+
 	fmt.Fprintln(w, "\n--------------------------- DAILY PERFORMANCE ----------------------------------")
 	if len(m.DailySummaries) == 0 {
 		fmt.Fprintln(w, "No daily performance history available.")
@@ -277,12 +339,73 @@ func RenderDashboard(w io.Writer, m *TradeMetrics) {
 		fmt.Fprintf(w, "%-10s  %-4s  %12s  %14s  %12s  %-19s\n",
 			"SYMBOL", "SIDE", "ENTRY PRICE", "QUANTITY", "SPENT USDT", "OPENED AT")
 		for _, pos := range m.OpenPositions {
-			openedStr := pos.OpenedAt.Format("2006-01-02 15:04:05")
+			openedStr := pos.OpenedAt.Local().Format("2006-01-02 15:04:05")
 			fmt.Fprintf(w, "%-10s  %-4s  %12.4f  %14.6f  %11.2f$  %-19s\n",
 				pos.Symbol, pos.Side, pos.EntryPrice, pos.Quantity, pos.QuoteSpent, openedStr)
 		}
 	}
 	fmt.Fprintln(w, "================================================================================")
+}
+
+// ExportTradesJSON writes all completed trades formatted as indented JSON to w.
+func ExportTradesJSON(w io.Writer, db *store.DB) error {
+	trades, err := db.GetAllTrades()
+	if err != nil {
+		return fmt.Errorf("export trades json: %w", err)
+	}
+
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(trades)
+}
+
+// ExportTradesCSV writes all completed trades formatted as CSV to w.
+func ExportTradesCSV(w io.Writer, db *store.DB) error {
+	trades, err := db.GetAllTrades()
+	if err != nil {
+		return fmt.Errorf("export trades csv: %w", err)
+	}
+
+	writer := csv.NewWriter(w)
+	defer writer.Flush()
+
+	header := []string{
+		"id", "order_id", "symbol", "side",
+		"entry_price", "exit_price", "quantity", "quote_spent",
+		"pnl", "pnl_pct", "exit_reason",
+		"entry_rsi", "entry_bb_width", "entry_score", "entry_vol_ratio",
+		"hold_duration_sec", "opened_at", "closed_at",
+	}
+	if err := writer.Write(header); err != nil {
+		return err
+	}
+
+	for _, t := range trades {
+		row := []string{
+			strconv.FormatInt(t.ID, 10),
+			strconv.FormatInt(t.OrderID, 10),
+			t.Symbol,
+			t.Side,
+			strconv.FormatFloat(t.EntryPrice, 'f', 8, 64),
+			strconv.FormatFloat(t.ExitPrice, 'f', 8, 64),
+			strconv.FormatFloat(t.Quantity, 'f', 8, 64),
+			strconv.FormatFloat(t.QuoteSpent, 'f', 4, 64),
+			strconv.FormatFloat(t.PnL, 'f', 4, 64),
+			strconv.FormatFloat(t.PnLPct, 'f', 4, 64),
+			t.ExitReason,
+			strconv.FormatFloat(t.EntryRSI, 'f', 4, 64),
+			strconv.FormatFloat(t.EntryBBWidth, 'f', 6, 64),
+			strconv.FormatFloat(t.EntryScore, 'f', 4, 64),
+			strconv.FormatFloat(t.EntryVolRatio, 'f', 4, 64),
+			strconv.FormatInt(t.HoldDurationSec, 10),
+			t.OpenedAt.UTC().Format(time.RFC3339),
+			t.ClosedAt.UTC().Format(time.RFC3339),
+		}
+		if err := writer.Write(row); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func formatUSDT(amount float64) string {
@@ -292,4 +415,17 @@ func formatUSDT(amount float64) string {
 		return fmt.Sprintf("-$%.2f", math.Abs(amount))
 	}
 	return "$0.00"
+}
+
+func formatDuration(sec int64) string {
+	if sec <= 0 {
+		return "< 1m"
+	}
+	d := time.Duration(sec) * time.Second
+	hours := int(d.Hours())
+	mins := int(d.Minutes()) % 60
+	if hours > 0 {
+		return fmt.Sprintf("%dh %02dm", hours, mins)
+	}
+	return fmt.Sprintf("%dm", mins)
 }

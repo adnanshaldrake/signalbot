@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -39,6 +40,8 @@ func main() {
 	backfillFlag := flag.Bool("backfill", false, "Download and store historical candles, then exit")
 	backtestFlag := flag.Bool("backtest", false, "Run backtest over stored candles, then exit")
 	metricsFlag := flag.Bool("metrics", false, "Display trade performance metrics and exit")
+	exportTradesFlag := flag.Bool("export-trades", false, "Export completed trade history to stdout, then exit")
+	formatFlag := flag.String("format", "json", "Output format for -export-trades: 'json' or 'csv'")
 	cpuProfile := flag.String("cpuprofile", "", "Write cpu profile to file")
 	memProfile := flag.String("memprofile", "", "Write memory profile to file")
 	flag.Parse()
@@ -88,6 +91,33 @@ func main() {
 		if err := metrics.PrintDashboard(os.Stdout, db); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to print metrics: %v\n", err)
 			os.Exit(1)
+		}
+		return
+	}
+
+	// --- Export trades dataset mode (for model feeding & offline analysis) ---
+	if *exportTradesFlag {
+		dbPath := "data/signalbot.db"
+		if cfg, err := config.Load(); err == nil && cfg.SQLiteDBPath != "" {
+			dbPath = cfg.SQLiteDBPath
+		}
+		db, err := store.Open(dbPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to open database at %s: %v\n", dbPath, err)
+			os.Exit(1)
+		}
+		defer db.Close()
+
+		if strings.ToLower(*formatFlag) == "csv" {
+			if err := metrics.ExportTradesCSV(os.Stdout, db); err != nil {
+				fmt.Fprintf(os.Stderr, "failed to export trades as CSV: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			if err := metrics.ExportTradesJSON(os.Stdout, db); err != nil {
+				fmt.Fprintf(os.Stderr, "failed to export trades as JSON: %v\n", err)
+				os.Exit(1)
+			}
 		}
 		return
 	}
@@ -405,12 +435,24 @@ func runCycle(
 			slog.Debug("entry_filter_blocked", "symbol", symbol, "reason", eligibility.Reason)
 			continue
 		}
+		bbBandwidth := 0.0
+		if middleBB > 0 {
+			bbBandwidth = (upperBB - lowerBB) / middleBB
+		}
+		volRatio := 1.0
+		avgVol := rollingWindow.VolumeUSDT() / 96.0
+		if avgVol > 0 {
+			volRatio = (volumeBase * currentPrice) / avgVol
+		}
+
 		candidates = append(candidates, signals.Candidate{
 			Symbol:        symbol,
 			CurrentPrice:  currentPrice,
 			UpperBB:       upperBB,
 			RSI:           rsiVal,
 			Volume24hUSDT: volume24hUSDT,
+			BBBandwidth:   bbBandwidth,
+			VolRatio:      volRatio,
 		})
 	}
 
@@ -443,7 +485,10 @@ func runCycle(
 		}
 
 		if cfg.PaperTrading {
-			if _, err := paperTrader.PlaceMarketOrder(ctx, candidate.Symbol, binance.Buy, candidate.CurrentPrice, decision.Quantity); err != nil {
+			if _, err := paperTrader.PlaceBuyOrderWithIndicators(
+				ctx, candidate.Symbol, candidate.CurrentPrice, decision.Quantity,
+				candidate.RSI, candidate.BBBandwidth, candidate.Score, candidate.VolRatio,
+			); err != nil {
 				slog.Error("paper buy failed", "symbol", candidate.Symbol, "error", err)
 				continue
 			}
@@ -476,15 +521,19 @@ func runCycle(
 				entryPrice, quoteSpent = candidate.CurrentPrice, decision.Quantity
 			}
 
-			// Record position using the accurate net quantity
+			// Record position using the accurate net quantity and entry indicator snapshot
 			pos := state.Position{
-				Symbol:     candidate.Symbol,
-				Side:       "BUY",
-				EntryPrice: entryPrice,
-				Quantity:   netQuantity, // Use net quantity after fees
-				QuoteSpent: quoteSpent,
-				OrderID:    resp.OrderID,
-				OpenedAt:   time.Now(),
+				Symbol:        candidate.Symbol,
+				Side:          "BUY",
+				EntryPrice:    entryPrice,
+				Quantity:      netQuantity, // Use net quantity after fees
+				QuoteSpent:    quoteSpent,
+				OrderID:       resp.OrderID,
+				OpenedAt:      time.Now(),
+				EntryRSI:      candidate.RSI,
+				EntryBBWidth:  candidate.BBBandwidth,
+				EntryScore:    candidate.Score,
+				EntryVolRatio: candidate.VolRatio,
 			}
 			if err := stateMgr.OpenPosition(ctx, pos); err != nil {
 				slog.Error("OpenPosition failed", "symbol", candidate.Symbol, "error", err)

@@ -40,6 +40,57 @@ func (t *Trader) PlaceMarketOrder(
 	return t.PlaceMarketOrderWithReason(ctx, symbol, side, currentPrice, quoteQty, "")
 }
 
+// PlaceBuyOrderWithIndicators simulates a market buy while persisting entry indicator metrics into state.
+func (t *Trader) PlaceBuyOrderWithIndicators(
+	ctx context.Context,
+	symbol string,
+	currentPrice float64,
+	quoteQty float64,
+	rsi float64,
+	bbWidth float64,
+	score float64,
+	volRatio float64,
+) (*binance.OrderResponse, error) {
+	now := time.Now()
+	baseQty := quoteQty / currentPrice
+	netQty := baseQty * (1 - t.cfg.TakerFeePct/100)
+	pos := state.Position{
+		Symbol:        symbol,
+		Side:          "BUY",
+		EntryPrice:    currentPrice,
+		Quantity:      netQty,
+		QuoteSpent:    quoteQty,
+		OrderID:       now.UnixNano(),
+		OpenedAt:      now,
+		EntryRSI:      rsi,
+		EntryBBWidth:  bbWidth,
+		EntryScore:    score,
+		EntryVolRatio: volRatio,
+	}
+	if err := t.stateMgr.OpenPosition(ctx, pos); err != nil {
+		return nil, fmt.Errorf("paper buy: record position: %w", err)
+	}
+	slog.Info("[PAPER] BUY executed",
+		"symbol", symbol,
+		"price", currentPrice,
+		"usdt_spent", quoteQty,
+		"qty", baseQty,
+		"rsi", fmt.Sprintf("%.2f", rsi),
+		"score", fmt.Sprintf("%.3f", score),
+	)
+	return &binance.OrderResponse{
+		Symbol:              symbol,
+		OrderID:             now.UnixNano(),
+		TransactTime:        now.UnixMilli(),
+		OrigQty:             fmt.Sprintf("%.8f", baseQty),
+		ExecutedQty:         fmt.Sprintf("%.8f", baseQty),
+		CummulativeQuoteQty: fmt.Sprintf("%.2f", quoteQty),
+		Status:              "FILLED",
+		Type:                "MARKET",
+		Side:                string(binance.Buy),
+	}, nil
+}
+
 // PlaceMarketOrderWithReason simulates market buy/sell while recording the exit reason on sells.
 func (t *Trader) PlaceMarketOrderWithReason(
 	ctx context.Context,

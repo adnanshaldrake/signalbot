@@ -22,13 +22,17 @@ func TestSQLiteManager_PersistenceAcrossRuns(t *testing.T) {
 	mgr := NewSQLiteManager(db)
 
 	pos1 := Position{
-		Symbol:     "BTCUSDT",
-		Side:       "BUY",
-		EntryPrice: 65000.0,
-		Quantity:   0.001,
-		QuoteSpent: 65.0,
-		OrderID:    123456,
-		OpenedAt:   time.Now().Add(-10 * time.Minute),
+		Symbol:        "BTCUSDT",
+		Side:          "BUY",
+		EntryPrice:    65000.0,
+		Quantity:      0.001,
+		QuoteSpent:    65.0,
+		OrderID:       123456,
+		OpenedAt:      time.Now().Add(-10 * time.Minute),
+		EntryRSI:      28.5,
+		EntryBBWidth:  0.035,
+		EntryScore:    0.75,
+		EntryVolRatio: 1.25,
 	}
 	pos2 := Position{
 		Symbol:     "ETHUSDT",
@@ -70,7 +74,7 @@ func TestSQLiteManager_PersistenceAcrossRuns(t *testing.T) {
 	if err != nil || storedBTC == nil {
 		t.Fatalf("after restart: expected to find BTCUSDT position, err: %v", err)
 	}
-	if storedBTC.EntryPrice != 65000.0 || storedBTC.Quantity != 0.001 {
+	if storedBTC.EntryPrice != 65000.0 || storedBTC.Quantity != 0.001 || storedBTC.EntryRSI != 28.5 {
 		t.Errorf("after restart: corrupted position data: %+v", storedBTC)
 	}
 
@@ -102,13 +106,13 @@ func TestSQLiteManager_PersistenceAcrossRuns(t *testing.T) {
 		t.Errorf("expected daily PnL 3.25, got %f", dailyPnL)
 	}
 
-	// Verify trades table in DB contains the closed trade
+	// Verify trades table in DB contains the closed trade with indicators
 	trades, err := db.GetAllTrades()
 	if err != nil || len(trades) != 1 {
 		t.Fatalf("expected 1 recorded trade, got %d, err: %v", len(trades), err)
 	}
 	t0 := trades[0]
-	if t0.Symbol != "BTCUSDT" || t0.PnL != 3.25 || t0.ExitReason != "TAKE_PROFIT" || t0.ExitPrice != exitPrice {
+	if t0.Symbol != "BTCUSDT" || t0.PnL != 3.25 || t0.ExitReason != "TAKE_PROFIT" || t0.ExitPrice != exitPrice || t0.EntryRSI != 28.5 || t0.HoldDurationSec <= 0 {
 		t.Errorf("unexpected recorded trade details: %+v", t0)
 	}
 }
