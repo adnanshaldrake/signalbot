@@ -650,7 +650,19 @@ func runBacktest(cfg *config.BotConfig, db *store.DB) {
 //  1. Screener: dynamically backtests candidates from Binance, keeps profitable pairs (primary)
 //  2. Auto-Discovery: scans active Binance USDT pairs by volume & trade count if AUTO_DISCOVER_SYMBOLS=true
 //  3. User WATCHLIST: fallback if screener/auto-discovery yield no symbols or if disabled
-func resolveWatchlist(cfg *config.BotConfig, db *store.DB) ([]string, error) {
+func resolveWatchlist(cfg *config.BotConfig, db *store.DB, customScreener ...screener.Screener) ([]string, error) {
+	if len(customScreener) > 0 && customScreener[0] != nil {
+		slog.Info("running custom screener to discover active watchlist")
+		screened, err := customScreener[0].Screen()
+		if err == nil && len(screened) > 0 {
+			slog.Info("custom screener selected symbols for trading", "count", len(screened), "symbols", screened)
+			return screened, nil
+		}
+		if err != nil {
+			slog.Warn("custom screener failed", "error", err)
+		}
+	}
+
 	if cfg.ScreenOnStartup {
 		slog.Info("running startup screener to discover active watchlist",
 			"top_n", cfg.ScreenTopN,
@@ -658,7 +670,8 @@ func resolveWatchlist(cfg *config.BotConfig, db *store.DB) ([]string, error) {
 			"min_pnl", cfg.ScreenMinPnL,
 			"min_trades", cfg.ScreenMinTrades,
 		)
-		screened := screener.Run(cfg, db)
+		scr := screener.NewVolumeBacktestScreener(cfg, db)
+		screened, _ := scr.Screen()
 		if len(screened) > 0 {
 			slog.Info("screener selected symbols for trading", "count", len(screened), "symbols", screened)
 			return screened, nil
