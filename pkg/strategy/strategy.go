@@ -92,6 +92,26 @@ func (s *Series) lows() []float64 {
 	return out
 }
 
+// Evaluator evaluates entry and exit trading rules at a given candle index.
+// Any custom or proprietary strategy (e.g. from signalbot-pro) can implement
+// this interface to integrate with backtesting and execution runners.
+type Evaluator interface {
+	ShouldEnter(index int) bool
+	ShouldExit(index int) bool
+}
+
+// IndicatorAccessor is an optional interface that strategies can implement
+// if they expose technical indicator values for a given candle index.
+type IndicatorAccessor interface {
+	UpperBB(index int) float64
+	MidBB(index int) float64
+	LowerBB(index int) float64
+	RSIAt(index int) float64
+}
+
+// Factory constructs an Evaluator from an OHLCV Series.
+type Factory func(series *Series) (Evaluator, error)
+
 // Strategy holds all precomputed indicator slices for a Series and can
 // evaluate entry/exit conditions at any candle index in O(1).
 type Strategy struct {
@@ -216,4 +236,14 @@ func Strategy1(series *Series) (*Strategy, error) {
 // Requires at least 200 candles of warm-up data.
 func Strategy2(series *Series) (*Strategy, error) {
 	return build(series, true)
+}
+
+// NewStrategy1 returns an Evaluator using Strategy1 rules.
+func NewStrategy1(series *Series) (Evaluator, error) {
+	return Strategy1(series)
+}
+
+// NewStrategy2 returns an Evaluator using Strategy2 rules.
+func NewStrategy2(series *Series) (Evaluator, error) {
+	return Strategy2(series)
 }

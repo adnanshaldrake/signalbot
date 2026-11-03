@@ -31,6 +31,7 @@ type RunnerV2 struct {
 	feePct         float64 // per-side trading fee percentage (e.g. 0.1 for 0.1%)
 	filterCfg      *FilterConfig // reuses the same FilterConfig type from runner.go
 	useStrategy2   bool
+	strategyFactory strategy.Factory
 }
 
 // NewRunnerV2 creates a RunnerV2 with the same defaults as NewRunner.
@@ -57,6 +58,12 @@ func (r *RunnerV2) WithRisk(stopLossPct, takeProfitPct float64, maxHoldCandles i
 // WithFee configures per-side trading fee percentage applied on entry and exit.
 func (r *RunnerV2) WithFee(feePct float64) *RunnerV2 {
 	r.feePct = feePct
+	return r
+}
+
+// WithStrategy overrides default strategy generation with a custom Evaluator Factory.
+func (r *RunnerV2) WithStrategy(factory strategy.Factory) *RunnerV2 {
+	r.strategyFactory = factory
 	return r
 }
 
@@ -186,8 +193,10 @@ func (r *RunnerV2) RunSymbolV2(symbol, interval string) (*Result, error) {
 
 		// Build float64 series and precompute all indicators in one pass
 		ser := candlesToSeries(candles)
-		var strat *strategy.Strategy
-		if r.useStrategy2 {
+		var strat strategy.Evaluator
+		if r.strategyFactory != nil {
+			strat, err = r.strategyFactory(ser)
+		} else if r.useStrategy2 {
 			strat, err = strategy.Strategy2(ser)
 		} else {
 			strat, err = strategy.Strategy1(ser)
@@ -215,9 +224,15 @@ func (r *RunnerV2) RunSymbolV2(symbol, interval string) (*Result, error) {
 			if openTrade == nil && strat.ShouldEnter(i) {
 				if r.filterCfg != nil {
 					window := buildRollingWindow(candles, i+1, volWindow)
+					var upperBB, lowerBB, midBB float64
+					if ind, ok := strat.(strategy.IndicatorAccessor); ok {
+						upperBB = ind.UpperBB(i)
+						lowerBB = ind.LowerBB(i)
+						midBB = ind.MidBB(i)
+					}
 					eligibility := filter.IsEligibleForEntry(
 						window, currentPrice,
-						strat.UpperBB(i), strat.LowerBB(i), strat.MidBB(i),
+						upperBB, lowerBB, midBB,
 						0,
 						fCfg,
 					)
