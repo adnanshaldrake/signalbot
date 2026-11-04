@@ -22,8 +22,8 @@ import (
 )
 
 // Screener defines an interface for selecting and ranking tradable symbols.
-// Custom screeners (e.g. from signalbot-pro or other packages) can implement
-// this interface to inject proprietary asset selection into the bot.
+// Custom screeners (e.g. external proprietary packages or custom filters)
+// can implement this interface to inject tailored asset selection into the bot.
 type Screener interface {
 	Screen() ([]string, error)
 }

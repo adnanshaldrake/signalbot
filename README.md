@@ -59,3 +59,11 @@ runner := backtest.NewRunnerV2(db, 100.0).
 ```
 
 See [`docs/blueprints/custom_strategy.go`](docs/blueprints/custom_strategy.go) for a full runnable blueprint.
+
+## Disclaimer
+
+This software is for educational and research purposes only. Cryptocurrency trading involves substantial risk of loss and is not suitable for every investor. Do not trade with money you cannot afford to lose. The authors and contributors accept no responsibility or liability for any financial losses or damages resulting from the use of this software.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

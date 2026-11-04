@@ -93,8 +93,8 @@ func (s *Series) lows() []float64 {
 }
 
 // Evaluator evaluates entry and exit trading rules at a given candle index.
-// Any custom or proprietary strategy (e.g. from signalbot-pro) can implement
-// this interface to integrate with backtesting and execution runners.
+// Any custom or proprietary strategy (e.g. external private packages or plugins)
+// can implement this interface to integrate with backtesting and execution runners.
 type Evaluator interface {
 	ShouldEnter(index int) bool
 	ShouldExit(index int) bool
