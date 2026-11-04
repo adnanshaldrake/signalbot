@@ -16,3 +16,7 @@ data/
 # Profiling output
 *.prof
 *.log
+
+# Go workspace
+go.work
+go.work.sum
