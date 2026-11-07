@@ -65,13 +65,17 @@ func NewSeriesFromRaw(raw [][]interface{}) (*Series, error) {
 	return &Series{Candles: candles}, nil
 }
 
-// closes returns a float64 slice of all close prices.
-func (s *Series) closes() []float64 {
+// Closes returns a float64 slice of all close prices.
+func (s *Series) Closes() []float64 {
 	out := make([]float64, len(s.Candles))
 	for i, c := range s.Candles {
 		out[i] = c.Close
 	}
 	return out
+}
+
+func (s *Series) closes() []float64 {
+	return s.Closes()
 }
 
 // highs returns a float64 slice of all high prices.

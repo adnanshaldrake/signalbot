@@ -76,12 +76,24 @@ type BotConfig struct {
 }
 
 func loadDotEnv() {
-	file, err := os.Open(".env")
-	if err != nil {
-		file, err = os.Open(".env")
-		if err != nil {
-			return
+	envPaths := []string{
+		os.Getenv("ENV_FILE"),
+		".env",
+		"../signalbot/.env",
+	}
+	var file *os.File
+	var err error
+	for _, p := range envPaths {
+		if p == "" {
+			continue
 		}
+		file, err = os.Open(p)
+		if err == nil {
+			break
+		}
+	}
+	if file == nil {
+		return
 	}
 	defer file.Close()
 
@@ -128,7 +140,15 @@ func Load() (*BotConfig, error) {
 		TakerFeePct:     getFloat64Env("TAKER_FEE_PCT", 0.1),
 
 
-		SQLiteDBPath: getStringEnv("SQLITE_DB_PATH", "data/signalbot.db"),
+		SQLiteDBPath: func() string {
+			p := getStringEnv("SQLITE_DB_PATH", "data/signalbot.db")
+			if _, err := os.Stat(p); os.IsNotExist(err) {
+				if _, err2 := os.Stat("../signalbot/" + p); err2 == nil {
+					return "../signalbot/" + p
+				}
+			}
+			return p
+		}(),
 
 		TelegramBotToken: os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramChatID:   os.Getenv("TELEGRAM_CHAT_ID"),

@@ -4,6 +4,7 @@ package app
 import (
 	"github.com/adnanshaldrake/signalbot/pkg/config"
 	"github.com/adnanshaldrake/signalbot/pkg/models"
+	"github.com/adnanshaldrake/signalbot/pkg/strategy"
 	"github.com/adnanshaldrake/signalbot/pkg/utils"
 	"encoding/json"
 	"fmt"
@@ -173,6 +174,22 @@ func GetTimeSeries(symbol string) (*techan.TimeSeries, error) {
 		series.AddCandle(candle)
 	}
 	return series, nil
+}
+
+// GetStrategySeries builds a native float64 strategy.Series for a symbol from the cache.
+func GetStrategySeries(symbol string) (*strategy.Series, error) {
+	cache := getCache()
+	result, err := cache.Get(symbol)
+	if err != nil {
+		return nil, fmt.Errorf("cache miss for %s: %v", symbol, err)
+	}
+
+	var ticker [][]interface{}
+	if err := json.Unmarshal([]byte(result), &ticker); err != nil {
+		return nil, fmt.Errorf("unmarshal ticker for %s: %v", symbol, err)
+	}
+
+	return strategy.NewSeriesFromRaw(ticker)
 }
 
 // ticker24h is the minimal subset of the Binance /api/v3/ticker/24hr response
