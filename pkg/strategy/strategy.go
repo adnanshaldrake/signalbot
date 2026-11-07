@@ -65,6 +65,19 @@ func NewSeriesFromRaw(raw [][]interface{}) (*Series, error) {
 	return &Series{Candles: candles}, nil
 }
 
+// Opens returns a float64 slice of all open prices.
+func (s *Series) Opens() []float64 {
+	out := make([]float64, len(s.Candles))
+	for i, c := range s.Candles {
+		out[i] = c.Open
+	}
+	return out
+}
+
+func (s *Series) opens() []float64 {
+	return s.Opens()
+}
+
 // Closes returns a float64 slice of all close prices.
 func (s *Series) Closes() []float64 {
 	out := make([]float64, len(s.Candles))
@@ -78,8 +91,8 @@ func (s *Series) closes() []float64 {
 	return s.Closes()
 }
 
-// highs returns a float64 slice of all high prices.
-func (s *Series) highs() []float64 {
+// Highs returns a float64 slice of all high prices.
+func (s *Series) Highs() []float64 {
 	out := make([]float64, len(s.Candles))
 	for i, c := range s.Candles {
 		out[i] = c.High
@@ -87,13 +100,34 @@ func (s *Series) highs() []float64 {
 	return out
 }
 
-// lows returns a float64 slice of all low prices.
-func (s *Series) lows() []float64 {
+func (s *Series) highs() []float64 {
+	return s.Highs()
+}
+
+// Lows returns a float64 slice of all low prices.
+func (s *Series) Lows() []float64 {
 	out := make([]float64, len(s.Candles))
 	for i, c := range s.Candles {
 		out[i] = c.Low
 	}
 	return out
+}
+
+func (s *Series) lows() []float64 {
+	return s.Lows()
+}
+
+// Volumes returns a float64 slice of all volume amounts.
+func (s *Series) Volumes() []float64 {
+	out := make([]float64, len(s.Candles))
+	for i, c := range s.Candles {
+		out[i] = c.Volume
+	}
+	return out
+}
+
+func (s *Series) volumes() []float64 {
+	return s.Volumes()
 }
 
 // Evaluator evaluates entry and exit trading rules at a given candle index.
