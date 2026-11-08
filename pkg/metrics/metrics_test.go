@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"adnan/binance-bot/pkg/store"
+	"github.com/adnanshaldrake/signalbot/pkg/store"
 )
 
 func TestCalculate_Empty(t *testing.T) {

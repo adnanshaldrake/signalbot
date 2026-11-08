@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"time"
 
-	"adnan/binance-bot/pkg/indicators"
+	"github.com/adnanshaldrake/signalbot/pkg/indicators"
 )
 
 // Candle is a single OHLCV bar with native float64 fields.
@@ -65,8 +65,21 @@ func NewSeriesFromRaw(raw [][]interface{}) (*Series, error) {
 	return &Series{Candles: candles}, nil
 }
 
-// closes returns a float64 slice of all close prices.
-func (s *Series) closes() []float64 {
+// Opens returns a float64 slice of all open prices.
+func (s *Series) Opens() []float64 {
+	out := make([]float64, len(s.Candles))
+	for i, c := range s.Candles {
+		out[i] = c.Open
+	}
+	return out
+}
+
+func (s *Series) opens() []float64 {
+	return s.Opens()
+}
+
+// Closes returns a float64 slice of all close prices.
+func (s *Series) Closes() []float64 {
 	out := make([]float64, len(s.Candles))
 	for i, c := range s.Candles {
 		out[i] = c.Close
@@ -74,8 +87,12 @@ func (s *Series) closes() []float64 {
 	return out
 }
 
-// highs returns a float64 slice of all high prices.
-func (s *Series) highs() []float64 {
+func (s *Series) closes() []float64 {
+	return s.Closes()
+}
+
+// Highs returns a float64 slice of all high prices.
+func (s *Series) Highs() []float64 {
 	out := make([]float64, len(s.Candles))
 	for i, c := range s.Candles {
 		out[i] = c.High
@@ -83,14 +100,55 @@ func (s *Series) highs() []float64 {
 	return out
 }
 
-// lows returns a float64 slice of all low prices.
-func (s *Series) lows() []float64 {
+func (s *Series) highs() []float64 {
+	return s.Highs()
+}
+
+// Lows returns a float64 slice of all low prices.
+func (s *Series) Lows() []float64 {
 	out := make([]float64, len(s.Candles))
 	for i, c := range s.Candles {
 		out[i] = c.Low
 	}
 	return out
 }
+
+func (s *Series) lows() []float64 {
+	return s.Lows()
+}
+
+// Volumes returns a float64 slice of all volume amounts.
+func (s *Series) Volumes() []float64 {
+	out := make([]float64, len(s.Candles))
+	for i, c := range s.Candles {
+		out[i] = c.Volume
+	}
+	return out
+}
+
+func (s *Series) volumes() []float64 {
+	return s.Volumes()
+}
+
+// Evaluator evaluates entry and exit trading rules at a given candle index.
+// Any custom or proprietary strategy (e.g. external private packages or plugins)
+// can implement this interface to integrate with backtesting and execution runners.
+type Evaluator interface {
+	ShouldEnter(index int) bool
+	ShouldExit(index int) bool
+}
+
+// IndicatorAccessor is an optional interface that strategies can implement
+// if they expose technical indicator values for a given candle index.
+type IndicatorAccessor interface {
+	UpperBB(index int) float64
+	MidBB(index int) float64
+	LowerBB(index int) float64
+	RSIAt(index int) float64
+}
+
+// Factory constructs an Evaluator from an OHLCV Series.
+type Factory func(series *Series) (Evaluator, error)
 
 // Strategy holds all precomputed indicator slices for a Series and can
 // evaluate entry/exit conditions at any candle index in O(1).
@@ -216,4 +274,14 @@ func Strategy1(series *Series) (*Strategy, error) {
 // Requires at least 200 candles of warm-up data.
 func Strategy2(series *Series) (*Strategy, error) {
 	return build(series, true)
+}
+
+// NewStrategy1 returns an Evaluator using Strategy1 rules.
+func NewStrategy1(series *Series) (Evaluator, error) {
+	return Strategy1(series)
+}
+
+// NewStrategy2 returns an Evaluator using Strategy2 rules.
+func NewStrategy2(series *Series) (Evaluator, error) {
+	return Strategy2(series)
 }

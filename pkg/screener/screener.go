@@ -14,12 +14,50 @@ import (
 	"strings"
 	"time"
 
-	"adnan/binance-bot/pkg/app"
-	"adnan/binance-bot/pkg/backtest"
-	"adnan/binance-bot/pkg/config"
-	"adnan/binance-bot/pkg/store"
-	"adnan/binance-bot/pkg/utils"
+	"github.com/adnanshaldrake/signalbot/pkg/app"
+	"github.com/adnanshaldrake/signalbot/pkg/backtest"
+	"github.com/adnanshaldrake/signalbot/pkg/config"
+	"github.com/adnanshaldrake/signalbot/pkg/store"
+	"github.com/adnanshaldrake/signalbot/pkg/utils"
 )
+
+// Screener defines an interface for selecting and ranking tradable symbols.
+// Custom screeners (e.g. external proprietary packages or custom filters)
+// can implement this interface to inject tailored asset selection into the bot.
+type Screener interface {
+	Screen() ([]string, error)
+}
+
+// VolumeBacktestScreener implements Screener using 24h volume candidates and backtest ranking.
+type VolumeBacktestScreener struct {
+	cfg *config.BotConfig
+	db  *store.DB
+}
+
+// NewVolumeBacktestScreener creates a VolumeBacktestScreener.
+func NewVolumeBacktestScreener(cfg *config.BotConfig, db *store.DB) *VolumeBacktestScreener {
+	return &VolumeBacktestScreener{cfg: cfg, db: db}
+}
+
+// Screen executes the volume and backtest screening process.
+func (s *VolumeBacktestScreener) Screen() ([]string, error) {
+	return Run(s.cfg, s.db), nil
+}
+
+// StaticScreener implements Screener with a fixed list of symbols.
+type StaticScreener struct {
+	Symbols []string
+}
+
+// NewStaticScreener creates a StaticScreener.
+func NewStaticScreener(symbols []string) *StaticScreener {
+	return &StaticScreener{Symbols: symbols}
+}
+
+// Screen returns the static list of symbols.
+func (s *StaticScreener) Screen() ([]string, error) {
+	return s.Symbols, nil
+}
 
 // Result holds the backtest outcome for a single screened symbol.
 type Result struct {

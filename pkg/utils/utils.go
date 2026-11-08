@@ -5,7 +5,7 @@ import (
 	"io"
 	"net/http"
 
-	"adnan/binance-bot/pkg/config"
+	"github.com/adnanshaldrake/signalbot/pkg/config"
 )
 
 // HTTPClient interface

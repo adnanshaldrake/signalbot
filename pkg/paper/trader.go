@@ -9,10 +9,10 @@ import (
 	"log/slog"
 	"time"
 
-	"adnan/binance-bot/pkg/binance"
-	"adnan/binance-bot/pkg/config"
-	"adnan/binance-bot/pkg/risk"
-	"adnan/binance-bot/pkg/state"
+	"github.com/adnanshaldrake/signalbot/pkg/binance"
+	"github.com/adnanshaldrake/signalbot/pkg/config"
+	"github.com/adnanshaldrake/signalbot/pkg/risk"
+	"github.com/adnanshaldrake/signalbot/pkg/state"
 )
 
 const startingBalanceUSDT = 1000.0 // Virtual starting balance for paper trading

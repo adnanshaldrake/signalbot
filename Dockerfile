@@ -1,7 +1,7 @@
 # =============================================================================
 # Stage 1 — Build
 # =============================================================================
-FROM golang:1.24-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 WORKDIR /build
 
@@ -17,21 +17,22 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 # =============================================================================
 # Stage 2 — Runtime (minimal image)
 # =============================================================================
-FROM alpine:3.20
+FROM alpine:latest
 
 # ca-certificates for HTTPS to Binance / Telegram
 RUN apk --no-cache add ca-certificates tzdata
 
 WORKDIR /app
 
-# Copy binary from build stage
-COPY --from=builder /build/signalbot .
-
-# Create data directory for SQLite (can be mounted as a volume)
-RUN mkdir -p /app/data
-
 # Run as non-root user for security
 RUN addgroup -S botgroup && adduser -S botuser -G botgroup
+
+# Create data directory for SQLite (can be mounted as a volume)
+RUN mkdir -p /app/data && chown -R botuser:botgroup /app/data
+
+# Copy binary from build stage
+COPY --from=builder --chown=botuser:botgroup /build/signalbot .
+
 USER botuser
 
 ENTRYPOINT ["./signalbot"]

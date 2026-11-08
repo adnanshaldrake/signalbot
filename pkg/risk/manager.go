@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"time"
 
-	"adnan/binance-bot/pkg/config"
-	"adnan/binance-bot/pkg/state"
+	"github.com/adnanshaldrake/signalbot/pkg/config"
+	"github.com/adnanshaldrake/signalbot/pkg/state"
 )
 
 // Decision is the outcome of a risk evaluation.

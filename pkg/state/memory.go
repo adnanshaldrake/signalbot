@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"adnan/binance-bot/pkg/store"
+	"github.com/adnanshaldrake/signalbot/pkg/store"
 )
 
 // MemoryManager implements position tracking entirely in-process.

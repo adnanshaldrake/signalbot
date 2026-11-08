@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"time"
 
-	"adnan/binance-bot/pkg/app"
-	"adnan/binance-bot/pkg/filter"
-	"adnan/binance-bot/pkg/store"
+	"github.com/adnanshaldrake/signalbot/pkg/app"
+	"github.com/adnanshaldrake/signalbot/pkg/filter"
+	"github.com/adnanshaldrake/signalbot/pkg/store"
 
 	"github.com/sdcoffey/big"
 	"github.com/sdcoffey/techan"

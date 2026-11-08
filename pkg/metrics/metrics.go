@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"time"
 
-	"adnan/binance-bot/pkg/store"
+	"github.com/adnanshaldrake/signalbot/pkg/store"
 )
 
 // DailySummary holds trade aggregations for a single day.
