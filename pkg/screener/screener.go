@@ -122,67 +122,21 @@ func Run(cfg *config.BotConfig, db *store.DB) []string {
 		})
 	}
 
-	// --- Step 4: filter by thresholds ---
-	var passed []Result
-	for _, r := range results {
-		if r.Trades >= cfg.ScreenMinTrades &&
-			r.WinRate >= cfg.ScreenMinWinRate &&
-			r.PnLUSDT >= cfg.ScreenMinPnL {
-			passed = append(passed, r)
-		}
+	// --- Step 4 & 5: filter by thresholds and rank ---
+	watchlist := FilterAndRankResults(results, cfg)
+	if len(watchlist) == 0 {
+		slog.Warn("screener: no symbols passed filter and none had positive PnL — returning empty watchlist",
+			"screened", len(results),
+			"min_win_rate", cfg.ScreenMinWinRate,
+			"min_pnl", cfg.ScreenMinPnL,
+		)
+		return nil
 	}
 
-	// --- Step 5: sort by PnL descending, cap at MaxWatchlistSize ---
-	sort.Slice(passed, func(i, j int) bool {
-		return passed[i].PnLUSDT > passed[j].PnLUSDT
-	})
-	if cfg.MaxWatchlistSize > 0 && len(passed) > cfg.MaxWatchlistSize {
-		passed = passed[:cfg.MaxWatchlistSize]
-	}
-
-	if len(passed) == 0 {
-		// Sort all screened results by PnL descending
-		sort.Slice(results, func(i, j int) bool {
-			return results[i].PnLUSDT > results[j].PnLUSDT
-		})
-
-		// If any symbol had positive PnL and at least 1 trade, select up to 3 best performers
-		var bestPositive []Result
-		for _, r := range results {
-			if r.Trades > 0 && r.PnLUSDT > 0 {
-				bestPositive = append(bestPositive, r)
-				if len(bestPositive) >= 3 {
-					break
-				}
-			}
-		}
-
-		if len(bestPositive) > 0 {
-			slog.Warn("screener: no symbols met strict thresholds; selecting top performers with positive PnL",
-				"count", len(bestPositive),
-				"screened", len(results),
-			)
-			passed = bestPositive
-		} else {
-			slog.Warn("screener: no symbols passed filter and none had positive PnL — returning empty watchlist",
-				"screened", len(results),
-				"min_win_rate", cfg.ScreenMinWinRate,
-				"min_pnl", cfg.ScreenMinPnL,
-			)
-			return nil
-		}
-	}
-
-	watchlist := make([]string, len(passed))
-	for i, r := range passed {
-		watchlist[i] = r.Symbol
+	for i, sym := range watchlist {
 		slog.Info("screener: selected symbol",
 			"rank", i+1,
-			"symbol", r.Symbol,
-			"trades", r.Trades,
-			"win_rate_pct", fmt.Sprintf("%.1f%%", r.WinRate),
-			"pnl_usdt", fmt.Sprintf("$%.4f", r.PnLUSDT),
-			"max_drawdown", fmt.Sprintf("$%.4f", r.Drawdown),
+			"symbol", sym,
 		)
 	}
 	slog.Info("screener: complete", "selected", len(watchlist))
@@ -274,12 +228,27 @@ func getTopSymbols(n int, minVol, maxVol float64) ([]string, error) {
 		slog.Warn("screener: could not fetch active symbol list from exchangeInfo", "error", err)
 	}
 
-	type candidate struct {
-		symbol string
-		vol    float64
+	tickerCandidates := make([]TickerCandidate, len(tickers))
+	for i, t := range tickers {
+		vol, _ := strconv.ParseFloat(t.QuoteVolume, 64)
+		tickerCandidates[i] = TickerCandidate{
+			Symbol:      t.Symbol,
+			QuoteVolume: vol,
+		}
 	}
-	var candidates []candidate
+	return FilterCandidateTickers(tickerCandidates, validMap, n, minVol, maxVol), nil
+}
 
+// TickerCandidate holds ticker data for candidate screening.
+type TickerCandidate struct {
+	Symbol      string
+	QuoteVolume float64
+}
+
+// FilterCandidateTickers filters tickers by USDT suffix, valid status, non-leveraged tokens,
+// and volume bounds [minVol, maxVol], returning top n symbols sorted by QuoteVolume descending.
+func FilterCandidateTickers(tickers []TickerCandidate, validMap map[string]bool, n int, minVol, maxVol float64) []string {
+	var candidates []TickerCandidate
 	for _, t := range tickers {
 		if validMap != nil && !validMap[t.Symbol] {
 			continue
@@ -292,18 +261,17 @@ func getTopSymbols(n int, minVol, maxVol float64) ([]string, error) {
 			strings.HasSuffix(base, "BULL") || strings.HasSuffix(base, "BEAR") {
 			continue
 		}
-		vol, _ := strconv.ParseFloat(t.QuoteVolume, 64)
-		if minVol > 0 && vol < minVol {
+		if minVol > 0 && t.QuoteVolume < minVol {
 			continue
 		}
-		if maxVol > 0 && vol > maxVol {
+		if maxVol > 0 && t.QuoteVolume > maxVol {
 			continue
 		}
-		candidates = append(candidates, candidate{symbol: t.Symbol, vol: vol})
+		candidates = append(candidates, t)
 	}
 
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].vol > candidates[j].vol
+		return candidates[i].QuoteVolume > candidates[j].QuoteVolume
 	})
 	if n > 0 && len(candidates) > n {
 		candidates = candidates[:n]
@@ -311,7 +279,58 @@ func getTopSymbols(n int, minVol, maxVol float64) ([]string, error) {
 
 	out := make([]string, len(candidates))
 	for i, c := range candidates {
-		out[i] = c.symbol
+		out[i] = c.Symbol
 	}
-	return out, nil
+	return out
+}
+
+// FilterAndRankResults filters backtest results by config thresholds and returns the ranked watchlist.
+func FilterAndRankResults(results []Result, cfg *config.BotConfig) []string {
+	var passed []Result
+	for _, r := range results {
+		if r.Trades >= cfg.ScreenMinTrades &&
+			r.WinRate >= cfg.ScreenMinWinRate &&
+			r.PnLUSDT >= cfg.ScreenMinPnL {
+			passed = append(passed, r)
+		}
+	}
+
+	sort.Slice(passed, func(i, j int) bool {
+		return passed[i].PnLUSDT > passed[j].PnLUSDT
+	})
+	if cfg.MaxWatchlistSize > 0 && len(passed) > cfg.MaxWatchlistSize {
+		passed = passed[:cfg.MaxWatchlistSize]
+	}
+
+	if len(passed) == 0 {
+		sort.Slice(results, func(i, j int) bool {
+			return results[i].PnLUSDT > results[j].PnLUSDT
+		})
+
+		var bestPositive []Result
+		for _, r := range results {
+			if r.Trades > 0 && r.PnLUSDT > 0 {
+				bestPositive = append(bestPositive, r)
+				if len(bestPositive) >= 3 {
+					break
+				}
+			}
+		}
+
+		if len(bestPositive) > 0 {
+			slog.Warn("screener: no symbols met strict thresholds; selecting top performers with positive PnL",
+				"count", len(bestPositive),
+				"screened", len(results),
+			)
+			passed = bestPositive
+		} else {
+			return nil
+		}
+	}
+
+	watchlist := make([]string, len(passed))
+	for i, r := range passed {
+		watchlist[i] = r.Symbol
+	}
+	return watchlist
 }
