@@ -34,6 +34,9 @@ func main() {
 	backtestFlag := flag.Bool("backtest", false, "Run backtest over stored candles, then exit")
 	metricsFlag := flag.Bool("metrics", false, "Display trade performance metrics and exit")
 	exportTradesFlag := flag.Bool("export-trades", false, "Export completed trade history to stdout, then exit")
+	exportTelemetryFlag := flag.Bool("export-telemetry", false, "Export scrubbed public telemetry JSON (stdout or -telemetry-dir), then exit")
+	telemetryDirFlag := flag.String("telemetry-dir", "", "Optional directory to write performance.json and trades.json for -export-telemetry")
+	startingBalanceFlag := flag.Float64("starting-balance", 1000.0, "Starting USDT balance baseline for -export-telemetry equity curve")
 	formatFlag := flag.String("format", "json", "Output format for -export-trades: 'json' or 'csv'")
 	cpuProfile := flag.String("cpuprofile", "", "Write cpu profile to file")
 	memProfile := flag.String("memprofile", "", "Write memory profile to file")
@@ -109,6 +112,42 @@ func main() {
 		} else {
 			if err := metrics.ExportTradesJSON(os.Stdout, db); err != nil {
 				fmt.Fprintf(os.Stderr, "failed to export trades as JSON: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		return
+	}
+
+	// --- Export scrubbed public telemetry mode ---
+	if *exportTelemetryFlag {
+		dbPath := "data/signalbot.db"
+		mode := "PAPER"
+		if cfg, err := config.Load(); err == nil {
+			if cfg.SQLiteDBPath != "" {
+				dbPath = cfg.SQLiteDBPath
+			}
+			mode = tradingMode(cfg)
+		}
+		db, err := store.Open(dbPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to open database at %s: %v\n", dbPath, err)
+			os.Exit(1)
+		}
+		defer db.Close()
+
+		opts := metrics.TelemetryOptions{
+			StartingBalanceUSDT: *startingBalanceFlag,
+			Mode:                mode,
+		}
+		if *telemetryDirFlag != "" {
+			if _, err := metrics.WriteTelemetryFiles(*telemetryDirFlag, db, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "failed to write telemetry files: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "wrote performance.json and trades.json to %s\n", *telemetryDirFlag)
+		} else {
+			if err := metrics.ExportAuditTelemetry(os.Stdout, db, opts); err != nil {
+				fmt.Fprintf(os.Stderr, "failed to export telemetry: %v\n", err)
 				os.Exit(1)
 			}
 		}
